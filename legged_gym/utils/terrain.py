@@ -1,6 +1,7 @@
 import numpy as np
 from numpy.random import choice
 from scipy import interpolate
+from scipy.ndimage import binary_dilation
 
 from isaacgym import terrain_utils
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
@@ -37,10 +38,14 @@ class Terrain:
         
         self.heightsamples = self.height_field_raw
         if self.type=="trimesh":
-            self.vertices, self.triangles = terrain_utils.convert_heightfield_to_trimesh(   self.height_field_raw,
+            self.vertices, self.triangles, self.x_edge_mask = terrain_utils.convert_heightfield_to_trimesh(   self.height_field_raw,
                                                                                             self.cfg.horizontal_scale,
                                                                                             self.cfg.vertical_scale,
                                                                                             self.cfg.slope_treshold)
+            edge_width_thresh = getattr(self.cfg, 'edge_width_thresh', 0.05)
+            half_edge_width = int(edge_width_thresh / self.cfg.horizontal_scale)
+            structure = np.ones((half_edge_width * 2 + 1, 1))
+            self.x_edge_mask = binary_dilation(self.x_edge_mask, structure=structure)
     
     def randomized_terrain(self):
         for k in range(self.cfg.num_sub_terrains):

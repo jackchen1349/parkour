@@ -296,7 +296,29 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         target_vec_norm = self.next_target_pos_rel / (norm + 1e-5)
         self.next_target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])
 
+    def _init_buffers(self):
+        super()._init_buffers()
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state)
+        self.feet_state = self.rigid_body_states.view(self.num_envs, -1, 13)[:, self.feet_indices, :]
+        self.feet_pos = self.feet_state[:, :, :3]
+        self.feet_vel = self.feet_state[:, :, 7:10]
+
+    def _update_rigid_body_state(self):
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(self.num_envs, -1, 13)
+        self.feet_state = self.rigid_body_states[:, self.feet_indices, :]
+        self.feet_pos = self.feet_state[:, :, :3]
+        self.feet_vel = self.feet_state[:, :, 7:10]
+
     def _post_physics_step_callback(self):
+        self._update_rigid_body_state()
+
+        contact = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 2.
+        self.contact_filt = torch.logical_or(contact, self.last_contacts)
+        self.last_contacts = contact
+
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
         self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
         if self.cfg.domain_rand.push_robots and (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):

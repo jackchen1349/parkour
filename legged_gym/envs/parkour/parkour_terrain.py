@@ -3,11 +3,12 @@
 Terrain types (index → name):
   0: smooth slope         6: stepping stones      12: large stairs up
   1: rough slope up       7: gaps                 13: large stairs down
-  2: rough slope down     8: smooth flat          14: parkour (stepping+incline)
-  3: rough stairs up      9: pit                  15: parkour_hurdle
-  4: rough stairs down    10: wall                16: parkour_flat
-  5: discrete             11: platform            17: parkour_step (high jump)
-                                                  18: parkour_gap (long jump)
+  2: rough slope down     8: smooth flat          14: large stairs bottom
+  3: rough stairs up      9: pit                  15: parkour (stepping+incline)
+  4: rough stairs down    10: wall                16: parkour_hurdle
+  5: discrete             11: platform            17: parkour_flat
+                                                  18: parkour_step (high jump)
+                                                  19: parkour_gap (long jump)
 
 Each parkour terrain generates waypoints embedded in the terrain.
 """
@@ -127,7 +128,7 @@ class ParkourHeightField(Terrain):
             self.add_roughness(terrain, difficulty)
 
         # --- Parkour terrains (indices 15-19, ref extreme-parkour, scaled for 8m terrain) ---
-        # Use fewer stones (3-4) for 8m terrain vs original 6 for 18m terrain
+        # num_stones = num_goals - 2 = 4 (vs extreme-parkour 6 for 18m terrain)
 
         elif choice < self.proportions[14]:
             idx = 15
@@ -137,7 +138,7 @@ class ParkourHeightField(Terrain):
             incline_height = 0.25 * difficulty
             last_incline_height = incline_height + 0.1 - 0.1 * difficulty
             parkour_terrain(terrain,
-                            num_stones=max(2, min(4, self.num_goals - 4)),
+                            num_stones=self.num_goals - 2,
                             x_range=x_range, y_range=y_range,
                             incline_height=incline_height,
                             stone_len=stone_len, stone_width=1.0,
@@ -148,7 +149,7 @@ class ParkourHeightField(Terrain):
         elif choice < self.proportions[15]:
             idx = 16
             parkour_hurdle_terrain(terrain,
-                                   num_stones=max(2, min(4, self.num_goals - 4)),
+                                   num_stones=self.num_goals - 2,
                                    stone_len=0.1 + 0.3 * difficulty,
                                    hurdle_height_range=[0.1 + 0.1 * difficulty, 0.15 + 0.25 * difficulty],
                                    pad_height=0,
@@ -160,7 +161,7 @@ class ParkourHeightField(Terrain):
         elif choice < self.proportions[16]:
             idx = 17
             parkour_hurdle_terrain(terrain,
-                                   num_stones=max(2, min(4, self.num_goals - 4)),
+                                   num_stones=self.num_goals - 2,
                                    stone_len=0.1 + 0.3 * difficulty,
                                    hurdle_height_range=[0.1 + 0.1 * difficulty, 0.15 + 0.15 * difficulty],
                                    pad_height=0,
@@ -172,7 +173,7 @@ class ParkourHeightField(Terrain):
         elif choice < self.proportions[17]:
             idx = 18
             parkour_step_terrain(terrain,
-                                 num_stones=max(2, min(4, self.num_goals - 4)),
+                                 num_stones=self.num_goals - 2,
                                  step_height=0.1 + 0.35 * difficulty,
                                  x_range=[0.3, 1.0],
                                  y_range=self.cfg.y_range,
@@ -183,7 +184,7 @@ class ParkourHeightField(Terrain):
         elif choice < self.proportions[18]:
             idx = 19
             parkour_gap_terrain(terrain,
-                                num_gaps=max(2, min(4, self.num_goals - 4)),
+                                num_gaps=self.num_goals - 2,
                                 gap_size=0.1 + 0.7 * difficulty,
                                 gap_depth=[0.2, 1],
                                 pad_height=0,

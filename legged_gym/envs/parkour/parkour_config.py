@@ -28,6 +28,7 @@ class ParkourCfg(LeggedRobotCfg):
         mesh_type = 'trimesh'
         horizontal_scale = 0.05
         vertical_scale = 0.005
+        edge_width_thresh = 0.05
         border_size = 5
         curriculum = True
         static_friction = 1.0
@@ -47,7 +48,7 @@ class ParkourCfg(LeggedRobotCfg):
         slope_treshold = 1.5
         origin_zero_z = True
         max_init_terrain_level = 5
-        num_goals = 6
+        num_goals = 8
         edge_width_thresh = 0.05
         simplify_grid = False
 
@@ -55,8 +56,8 @@ class ParkourCfg(LeggedRobotCfg):
         # Pretraining uses diverse terrains; finetuning evaluates on gap/step only.
         # 20 terrain type proportions (normalized to sum=1.0):
         terrain_proportions = [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.15, 0.15, 0.10, 0.30, 0.30, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.15, 0.10, 0.30, 0.30, 0.0,
         ]
 
     class morphology:
@@ -86,17 +87,17 @@ class ParkourCfg(LeggedRobotCfg):
             heading = [-3.14, 3.14]
 
     class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.42]
+        pos = [0.0, 0.0, 0.375]
         default_joint_angles = {
-            'FL_HipX_joint': 0.0, 'FL_HipY_joint': 0.2, 'FL_Knee_joint': 1.5,
-            'FR_HipX_joint': 0.0, 'FR_HipY_joint': 0.2, 'FR_Knee_joint': 1.5,
-            'HL_HipX_joint': 0.0, 'HL_HipY_joint': -0.8, 'HL_Knee_joint': 1.5,
-            'HR_HipX_joint': 0.0, 'HR_HipY_joint': -0.8, 'HR_Knee_joint': 1.5,
+            'FL_HipX_joint': 0.0, 'FL_HipY_joint': -0.65, 'FL_Knee_joint': 1.3,
+            'FR_HipX_joint': 0.0, 'FR_HipY_joint': -0.65, 'FR_Knee_joint': 1.3,
+            'HL_HipX_joint': 0.0, 'HL_HipY_joint': -0.65, 'HL_Knee_joint': 1.3,
+            'HR_HipX_joint': 0.0, 'HR_HipY_joint': -0.65, 'HR_Knee_joint': 1.3,
         }
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'HipX': 50.0, 'HipY': 50.0, 'Knee': 50.0}
+        stiffness = {'HipX': 30.0, 'HipY': 30.0, 'Knee': 30.0}
         damping = {'HipX': 1.0, 'HipY': 1.0, 'Knee': 1.0}
         action_scale = 0.25
         decimation = 4
