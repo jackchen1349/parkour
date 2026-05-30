@@ -1,14 +1,19 @@
 """Parkour terrain with waypoint system — references extreme-parkour design.
 
 Terrain types (index → name):
-  0: smooth slope         6: stepping stones      12: large stairs up
-  1: rough slope up       7: gaps                 13: large stairs down
-  2: rough slope down     8: smooth flat          14: large stairs bottom
-  3: rough stairs up      9: pit                  15: parkour (stepping+incline)
-  4: rough stairs down    10: wall                16: parkour_hurdle
-  5: discrete             11: platform            17: parkour_flat
-                                                  18: parkour_step (high jump)
-                                                  19: parkour_gap (long jump)
+  0: smooth slope up      7: stepping stones
+  1: smooth slope down    8: gaps
+  2: rough slope up       9: smooth flat
+  3: rough slope down     10: pit
+  4: rough stairs up      11: wall
+  5: rough stairs down    12: platform
+  6: discrete             13: large stairs up
+                          14: large stairs down
+                          15: parkour (stepping+incline)
+                          16: parkour_hurdle
+                          17: parkour_flat
+                          18: parkour_step (high jump)
+                          19: parkour_gap (long jump)
 
 Each parkour terrain generates waypoints embedded in the terrain.
 """

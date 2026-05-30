@@ -304,6 +304,11 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.feet_pos = self.feet_state[:, :, :3]
         self.feet_vel = self.feet_state[:, :, 7:10]
 
+        hip_names = [s for s in self.dof_names if "Hip" in s]
+        self.hip_indices = torch.zeros(len(hip_names), dtype=torch.long, device=self.device, requires_grad=False)
+        for i, name in enumerate(hip_names):
+            self.hip_indices[i] = self.dof_names.index(name)
+
     def _update_rigid_body_state(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
@@ -338,8 +343,14 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         if self.custom_origins:
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
-            self.root_states[env_ids, 0] -= 1.2 + torch_rand_float(-0.3, 0.3, (n, 1), device=self.device).squeeze(1)
-            self.root_states[env_ids, 1] += torch_rand_float(-0.8, 0.8, (n, 1), device=self.device).squeeze(1)
+            if self.cfg.env.randomize_start_pos:
+                self.root_states[env_ids, :2] += torch_rand_float(-0.3, 0.3, (n, 2), device=self.device)
+            if self.cfg.env.randomize_start_yaw:
+                rand_yaw = self.cfg.env.rand_yaw_range * torch_rand_float(-1, 1, (n, 1), device=self.device).squeeze(1)
+                quat = quat_from_euler_xyz(torch.zeros(n, device=self.device), torch.zeros(n, device=self.device), rand_yaw)
+                self.root_states[env_ids, 3:7] = quat[:]
+            if self.cfg.env.randomize_start_y:
+                self.root_states[env_ids, 1] += self.cfg.env.rand_y_range * torch_rand_float(-1, 1, (n, 1), device=self.device).squeeze(1)
         else:
             self.root_states[env_ids] = self.base_init_state
             self.root_states[env_ids, :3] += self.env_origins[env_ids]

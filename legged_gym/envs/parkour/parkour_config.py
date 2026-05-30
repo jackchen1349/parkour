@@ -24,6 +24,12 @@ class ParkourCfg(LeggedRobotCfg):
         next_goal_threshold = 0.2
         reach_goal_delay = 0.1
 
+        randomize_start_pos = True
+        randomize_start_yaw = True
+        rand_yaw_range = 1.2
+        randomize_start_y = True
+        rand_y_range = 0.8
+
     class terrain(LeggedRobotCfg.terrain):
         mesh_type = 'trimesh'
         horizontal_scale = 0.05
