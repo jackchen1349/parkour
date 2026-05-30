@@ -13,8 +13,11 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class ParkourCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
         num_envs = 8192  # paper: N = 8192 parallel environments
-        num_observations = 48  # 3+3+3+3+12+12+12 = 48
-        num_privileged_obs = 55  # 48 + 3 (lin_vel) + 4 (morph_params)
+        n_proprio = 46  # 3(ang_vel)+1(roll)+1(pitch)+1(delta_yaw)+12(dof_pos)+12(dof_vel)+12(prev_action)+4(contact)
+        history_len = 5
+        num_observations = 46
+        # privileged = x_t(46) + lin_vel(3) + mass(1) + COM(3) + morph(4) + friction(1) + motor(2) + history(5*46=230) = 290
+        num_privileged_obs = 290
         num_actions = 12
         episode_length_s = 20
         send_timeouts = True

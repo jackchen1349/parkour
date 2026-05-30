@@ -22,6 +22,20 @@ from legged_gym.envs.parkour.parkour_terrain import ParkourHeightField
 from legged_gym.envs.parkour.parkour_rewards import ParkourRewards
 
 
+def euler_from_quaternion(quat_angle):
+    x = quat_angle[:, 0]; y = quat_angle[:, 1]; z = quat_angle[:, 2]; w = quat_angle[:, 3]
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll = torch.atan2(t0, t1)
+    t2 = +2.0 * (w * y - z * x)
+    t2 = torch.clip(t2, -1., 1.)
+    pitch = torch.asin(t2)
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw = torch.atan2(t3, t4)
+    return roll, pitch, yaw
+
+
 class ParkourRobot(LeggedRobot, ParkourRewards):
     def __init__(self, cfg, sim_params, physics_engine, sim_device, headless):
         self._morphology_manager = MorphologyManager(
@@ -229,29 +243,62 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
     # ---- Observations ----
 
     def compute_observations(self):
-        self.obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel,
-            self.base_ang_vel * self.obs_scales.ang_vel,
-            self.projected_gravity,
-            self.commands[:, :3] * self.commands_scale,
-            (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-            self.dof_vel * self.obs_scales.dof_vel,
-            self.actions
-        ), dim=-1)
+        """Paper state: x_t = [ang_vel(3), roll(1), pitch(1), delta_yaw(1),
+           dof_pos(12), dof_vel(12), prev_action(12), contact(4)] = 46 dims.
+           Privileged adds: lin_vel(3), mass(1), COM(3), morph(4), friction(1),
+           motor(2), history(5*46=230)."""
+        obs_buf = torch.cat((
+            self.base_ang_vel * self.obs_scales.ang_vel,                               # 3
+            self.roll[:, None],                                                         # 1
+            self.pitch[:, None],                                                        # 1
+            self.delta_yaw[:, None],                                                    # 1
+            (self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos,        # 12
+            self.dof_vel * self.obs_scales.dof_vel,                                     # 12
+            self.actions,                                                                # 12
+            self.contact_filt.float() - 0.5,                                            # 4
+        ), dim=-1)  # = 46
+
+        self.obs_buf[:] = obs_buf
 
         if self.num_privileged_obs is not None:
-            if self._morphology_params_per_env is not None:
-                morph_params = self._morphology_params_per_env.to(self.device)
-            else:
-                morph_params = torch.ones(self.num_envs, 4, device=self.device)
+            priv_explicit = self.base_lin_vel * self.obs_scales.lin_vel                 # 3
+            priv_mass = self._body_total_mass[:, None]                                   # 1
+            priv_com = self._body_com                                                    # 3
+            priv_latent = torch.cat((
+                self.mass_params_tensor,                                                 # 4
+                self.friction_coeffs_tensor,                                             # 1
+                self.motor_strength[0, :, 0:1] - 1.,                                     # 1
+                self.motor_strength[1, :, 0:1] - 1.,                                     # 1
+            ), dim=-1)  # = 7
             self.privileged_obs_buf = torch.cat([
-                self.obs_buf,
-                self.base_lin_vel * self.obs_scales.lin_vel,
-                morph_params,
+                obs_buf,
+                priv_explicit,
+                priv_mass,
+                priv_com,
+                priv_latent,
+                self.obs_history_buf.view(self.num_envs, -1),                            # 5 * 46 = 230
             ], dim=-1)
 
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+
+        # Update proprioceptive history
+        self.obs_history_buf = torch.where(
+            (self.episode_length_buf <= 1)[:, None, None],
+            obs_buf.unsqueeze(1).repeat(1, self.cfg.env.history_len, 1),
+            torch.cat([self.obs_history_buf[:, 1:], obs_buf.unsqueeze(1)], dim=1),
+        )
+
+    def _get_noise_scale_vec(self, cfg):
+        noise_vec = torch.zeros(self.num_obs, device=self.device)
+        self.add_noise = cfg.noise.add_noise
+        noise_scales = cfg.noise.noise_scales
+        noise_level = cfg.noise.noise_level
+        noise_vec[0:3] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
+        noise_vec[3:5] = noise_scales.gravity * noise_level
+        noise_vec[6:18] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
+        noise_vec[18:30] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
+        return noise_vec
 
     # ---- PD Control with morphology correction ----
 
@@ -267,9 +314,11 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
                 ).to(self.device)
                 p_gains[i] *= correction
                 d_gains[i] *= correction
-            torques = p_gains * (actions_scaled + self.default_dof_pos - self.dof_pos) - d_gains * self.dof_vel
+            torques = self.motor_strength[0] * p_gains * (actions_scaled + self.default_dof_pos - self.dof_pos) \
+                      - self.motor_strength[1] * d_gains * self.dof_vel
         else:
-            torques = self.p_gains * (actions_scaled + self.default_dof_pos - self.dof_pos) - self.d_gains * self.dof_vel
+            torques = self.motor_strength[0] * self.p_gains * (actions_scaled + self.default_dof_pos - self.dof_pos) \
+                      - self.motor_strength[1] * self.d_gains * self.dof_vel
 
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
@@ -310,6 +359,34 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         for i, name in enumerate(hip_names):
             self.hip_indices[i] = self.dof_names.index(name)
 
+        self.default_dof_pos_all = self.default_dof_pos.repeat(self.num_envs, 1)
+        self.delta_yaw = torch.zeros(self.num_envs, device=self.device)
+        self.roll = torch.zeros(self.num_envs, device=self.device)
+        self.pitch = torch.zeros(self.num_envs, device=self.device)
+        self.yaw = torch.zeros(self.num_envs, device=self.device)
+        self._body_total_mass = torch.ones(self.num_envs, device=self.device)
+        self._body_com = torch.zeros(self.num_envs, 3, device=self.device)
+        self.obs_history_buf = torch.zeros(self.num_envs, self.cfg.env.history_len, self.cfg.env.n_proprio, device=self.device, dtype=torch.float)
+
+        str_rng = self.cfg.domain_rand.motor_strength_range
+        self.motor_strength = (str_rng[1] - str_rng[0]) * torch.rand(2, self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False) + str_rng[0]
+        self.mass_params_tensor = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
+        if self._morphology_params_per_env is not None:
+            self.mass_params_tensor[:] = self._morphology_params_per_env.to(self.device)
+        self.friction_coeffs_tensor = self.friction_coeffs.to(self.device).float()
+        if hasattr(self, '_body_masses'):
+            self._body_total_mass = self._body_masses.sum(dim=1)
+
+    def _process_rigid_body_props(self, props, env_id):
+        if self.cfg.domain_rand.randomize_base_mass:
+            rng = self.cfg.domain_rand.added_mass_range
+            props[0].mass += np.random.uniform(rng[0], rng[1])
+        if env_id == 0:
+            self._body_masses = torch.zeros(self.num_envs, self.num_bodies, device=self.device)
+        for b in range(len(props)):
+            self._body_masses[env_id, b] = props[b].mass
+        return props
+
     def _update_rigid_body_state(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
@@ -317,6 +394,10 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.feet_state = self.rigid_body_states[:, self.feet_indices, :]
         self.feet_pos = self.feet_state[:, :, :3]
         self.feet_vel = self.feet_state[:, :, 7:10]
+        # COM = weighted average of body positions by mass
+        if hasattr(self, '_body_masses'):
+            weighted_pos = self.rigid_body_states[:, :, :3] * self._body_masses[:, :, None]
+            self._body_com[:] = weighted_pos.sum(dim=1) / self._body_total_mass[:, None]
 
     def _post_physics_step_callback(self):
         self._update_rigid_body_state()
@@ -325,16 +406,17 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.contact_filt = torch.logical_or(contact, self.last_contacts)
         self.last_contacts = contact
 
+        self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
+
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
         self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
         if self.cfg.domain_rand.push_robots and (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
             self._push_robots()
         self._update_goals()
+        self.delta_yaw = self.target_yaw - self.yaw
 
     def post_physics_step(self):
         super().post_physics_step()
-        if self.last_torques is None:
-            self.last_torques = torch.zeros_like(self.torques)
         self.last_torques[:] = self.torques[:]
 
     # ---- Reset and curriculum ----
@@ -379,6 +461,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.reset_buf[env_ids] = 1
         self.cur_goal_idx[env_ids] = 0
         self.reach_goal_timer[env_ids] = 0
+        self.obs_history_buf[env_ids] = 0.
+        self.delta_yaw[env_ids] = 0.
         self.extras["episode"] = {}
         for key in self.episode_sums.keys():
             self.extras["episode"]["rew_" + key] = torch.mean(
