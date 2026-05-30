@@ -303,6 +303,7 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.feet_state = self.rigid_body_states.view(self.num_envs, -1, 13)[:, self.feet_indices, :]
         self.feet_pos = self.feet_state[:, :, :3]
         self.feet_vel = self.feet_state[:, :, 7:10]
+        self.last_torques = torch.zeros_like(self.torques)
 
         hip_names = [s for s in self.dof_names if "Hip" in s]
         self.hip_indices = torch.zeros(len(hip_names), dtype=torch.long, device=self.device, requires_grad=False)
