@@ -267,9 +267,9 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
             priv_latent = torch.cat((
                 self.mass_params_tensor,                                                 # 4
                 self.friction_coeffs_tensor,                                             # 1
-                self.motor_strength[0, :, 0:1] - 1.,                                     # 1
-                self.motor_strength[1, :, 0:1] - 1.,                                     # 1
-            ), dim=-1)  # = 7
+                self.motor_strength[0] - 1.,                                             # 12
+                self.motor_strength[1] - 1.,                                             # 12
+            ), dim=-1)  # = 29
             self.privileged_obs_buf = torch.cat([
                 obs_buf,
                 priv_explicit,
