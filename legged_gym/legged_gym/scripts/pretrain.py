@@ -29,10 +29,6 @@ import torch
 
 def train(args):
     # Create log directory
-    log_root = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        'logs', 'parkour_pretrain'
-    )
 
     print("=" * 60)
     print("Phase 1: Pretraining with Spatial Domain Randomization")
@@ -51,7 +47,7 @@ def train(args):
     print(f"Num buckets: {env.cfg.morphology.num_buckets}")
 
     ppo_runner, train_cfg = task_registry.make_alg_runner(
-        log_root=log_root, env=env, name=args.task, args=args
+        env=env, name=args.task, args=args
     )
 
     print(f"Log directory: {ppo_runner.log_dir}")
