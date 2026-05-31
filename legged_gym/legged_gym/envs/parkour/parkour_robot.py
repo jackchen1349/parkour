@@ -373,7 +373,7 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.mass_params_tensor = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
         if self._morphology_params_per_env is not None:
             self.mass_params_tensor[:] = self._morphology_params_per_env.to(self.device)
-        self.friction_coeffs_tensor = self.friction_coeffs.to(self.device).float()
+        self.friction_coeffs_tensor = self.friction_coeffs.to(self.device).float().view(self.num_envs, 1)
         if hasattr(self, '_body_masses'):
             self._body_total_mass = self._body_masses.sum(dim=1)
 
