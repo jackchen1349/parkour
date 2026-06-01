@@ -28,8 +28,7 @@ class ParkourRewards:
 
     def _reward_tracking_yaw(self):
         """Exp penalty on yaw error. Ref: extreme-parkour L1233."""
-        yaw = self.rpy[:, 2]
-        return torch.exp(-torch.abs(self.target_yaw - yaw))
+        return torch.exp(-torch.abs(self.target_yaw - self.yaw))
 
     def _reward_lin_vel_z(self):
         """Penalize z velocity, scaled by terrain type. Ref: extreme-parkour L1237."""

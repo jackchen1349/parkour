@@ -1,10 +1,23 @@
-"""Parkour co-design config — terrain/reward params reference extreme-parkour.
+"""Parkour co-design config — RMA-style architecture matching extreme-parkour.
 
-Terrain proportions: 19 types (indices 0-19), proportions sum to ~2.0 and normalized.
-Parkour-specific terrains (idx 15-19): parkour, parkour_hurdle, parkour_flat,
-  parkour_step (high jump), parkour_gap (long jump) — each 0.2 proportion.
+Observation layout (per paper Sec 2.1):
+  xt  (n_proprio=47): ang_vel(3)+roll(1)+pitch(1)+delta_yaw(1)+delta_next_yaw(1)
+                       +dof_pos(12)+dof_vel(12)+prev_action(12)+contact(4)
+  e't (n_priv=3):      base_lin_vel (explicit privileged)
+  et  (n_priv_latent=33): mass(1)+com(3)+morph(4)+friction(1)+motor_kp(12)+motor_kd(12)
+  mt  (n_scan=132):      height measurements 12x11 grid (exteroceptive)
+  ht  (history=5x47=235): stacked proprioceptive history
 
-Reward names match extreme-parkour: tracking_goal_vel, tracking_yaw, delta_torques, etc.
+  obs_buf = [xt, e't, et, mt] = 215
+  privileged_obs_buf = [xt, e't, et, mt, ht] = 450
+
+Network (matching extreme-parkour ActorCriticRMA):
+  ScanEncoder(mt) → scan_latent
+  PrivEncoder(et) → priv_latent (teacher)
+  HistoryEncoder(ht) → hist_latent (student / DAgger)
+  Actor([xt, scan_latent, e't, latent]) → actions(12)
+  Critic(raw_privileged_obs) → value(1)  ← no encoding, direct raw input
+  Estimator(xt) → predicted_e't  ← separate sim2real module
 """
 
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
@@ -12,12 +25,14 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class ParkourCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
-        num_envs = 6144  # paper: N = 8192 parallel environments
-        n_proprio = 46  # 3(ang_vel)+1(roll)+1(pitch)+1(delta_yaw)+12(dof_pos)+12(dof_vel)+12(prev_action)+4(contact)
+        num_envs = 6144
+        n_proprio = 47
+        n_scan = 132
+        n_priv = 3
+        n_priv_latent = 33
         history_len = 5
-        num_observations = 46
-        # privileged = x_t(46) + lin_vel(3) + mass(1) + COM(3) + morph(4) + friction(1) + motor_kp(12) + motor_kd(12) + history(230) = 312
-        num_privileged_obs = 312
+        num_observations = 215  # n_proprio(47)+n_priv(3)+n_priv_latent(33)+n_scan(132)
+        num_privileged_obs = 450  # num_observations(215)+history_len*n_proprio(235)
         num_actions = 12
         episode_length_s = 20
         send_timeouts = True
@@ -43,17 +58,17 @@ class ParkourCfg(LeggedRobotCfg):
         static_friction = 1.0
         dynamic_friction = 1.0
         restitution = 0.
-        measure_heights = False
+        measure_heights = True
         measured_points_x = [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.05, 1.2]
         measured_points_y = [-0.75, -0.6, -0.45, -0.3, -0.15, 0., 0.15, 0.3, 0.45, 0.6, 0.75]
         y_range = [-0.4, 0.4]
         height = [0.02, 0.06]
         downsampled_scale = 0.075
         measure_horizontal_noise = 0.0
-        terrain_length = 8.
+        terrain_length = 18.
         terrain_width = 8.
         num_rows = 10
-        num_cols = 20
+        num_cols = 40
         slope_treshold = 1.5
         origin_zero_z = True
         max_init_terrain_level = 5
@@ -61,18 +76,18 @@ class ParkourCfg(LeggedRobotCfg):
         edge_width_thresh = 0.05
         simplify_grid = False
 
-        # Paper focuses on two parkour tasks: long jump (gap) and high jump (step).
-        # Pretraining uses diverse terrains; finetuning evaluates on gap/step only.
-        # 20 terrain type proportions (normalized to sum=1.0):
         terrain_proportions = [
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.15, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.15, 0.10, 0.30, 0.30, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.20, 0.20, 0.30, 0.30, 0.0,
         ]
 
     class morphology:
         scaling_range = [0.6, 1.4]
         num_buckets = 100
-        pd_correction_coeffs = [0.0, 0.0, 1.0, 0.0]
+        # PD gain correction: η = a*ξ³ + b*ξ² + c*ξ + d  (paper Eq.1)
+        # Quadratic η=ξ² matches gravity-dominant parkour (τ_g ∝ m·r ∝ ξ²).
+        # Linear [0,0,1,0] under-drives long legs; cubic may oscillate.
+        pd_correction_coeffs = [0.03499, -0.3338, 1.382, -0.1001]  # η = ξ²
         target_morphology = None
 
     class parkour:
@@ -83,7 +98,7 @@ class ParkourCfg(LeggedRobotCfg):
 
     class commands(LeggedRobotCfg.commands):
         num_commands = 4
-        resampling_time = 10.
+        resampling_time = 6.
         heading_command = False
         curriculum = False
         lin_vel_clip = 0.2
@@ -106,8 +121,8 @@ class ParkourCfg(LeggedRobotCfg):
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
-        stiffness = {'HipX': 30.0, 'HipY': 30.0, 'Knee': 30.0}
-        damping = {'HipX': 1.0, 'HipY': 1.0, 'Knee': 1.0}
+        stiffness = {'HipX': 40.0, 'HipY': 40.0, 'Knee': 40.0}
+        damping = {'HipX': 0.7, 'HipY': 0.7, 'Knee': 0.7}
         action_scale = 0.25
         decimation = 4
 
@@ -133,12 +148,12 @@ class ParkourCfg(LeggedRobotCfg):
 
     class rewards(LeggedRobotCfg.rewards):
         only_positive_rewards = True
-        tracking_sigma = 0.25
+        tracking_sigma = 0.20
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 1.0
         soft_torque_limit = 1.0
         base_height_target = 0.35
-        max_contact_force = 100.0
+        max_contact_force = 40.0
 
         class scales:
             tracking_goal_vel = 1.5
@@ -147,13 +162,13 @@ class ParkourCfg(LeggedRobotCfg):
             ang_vel_xy = -0.05
             orientation = -1.0
             dof_acc = -2.5e-7
-            collision = -10.0
+            collision = 0.0
             action_rate = -0.1
             delta_torques = -1.0e-7
             torques = -0.00001
             hip_pos = -0.5
             dof_error = -0.04
-            feet_stumble = -1.0
+            feet_stumble = 0.0
             feet_edge = -1.0
             dof_pos_limits = 0.0
             termination = 0.0
@@ -218,6 +233,10 @@ class ParkourCfgPPO(LeggedRobotCfgPPO):
         actor_hidden_dims = [512, 256, 128]
         critic_hidden_dims = [512, 256, 128]
         activation = 'elu'
+        scan_encoder_dims = [128, 64, 32]       # mt → scan_latent
+        priv_encoder_dims = [64, 20]             # et → priv_latent (teacher)
+        history_encoder_output_dim = 20          # ht → hist_latent (student, matches priv output)
+        estimator_hidden_dims = [128, 64]       # xt → predicted_e't (separate sim2real module)
 
     class algorithm:
         value_loss_coef = 1.0
@@ -232,12 +251,17 @@ class ParkourCfgPPO(LeggedRobotCfgPPO):
         lam = 0.95
         desired_kl = 0.01
         max_grad_norm = 1.
+        dagger_update_freq = 20
+        priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
+        priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
+        estimator_hidden_dims = [256, 128]       # xt → predicted_e't
+        train_with_estimated_states = True
 
     class runner:
-        policy_class_name = 'ActorCritic'
+        policy_class_name = 'ParkourActorCritic'
         algorithm_class_name = 'PPO'
         num_steps_per_env = 24
-        max_iterations = 6000
+        max_iterations = 30000
         save_interval = 100
         experiment_name = 'parkour_pretrain'
         run_name = ''

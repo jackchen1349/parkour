@@ -100,7 +100,7 @@ class BayesianOptimizer:
         self.y.append(score)
 
 
-def evaluate_morphology(env, xi, num_eps=10):
+def evaluate_morphology(env, act_inference, xi, num_eps=10):
     """Evaluate a morphology's performance on parkour tasks.
 
     Paper uses cumulative reward as the fitness metric for BO.
@@ -113,7 +113,7 @@ def evaluate_morphology(env, xi, num_eps=10):
     survived = 0
     total_eps = 0
 
-    obs = env.reset()
+    obs, _ = env.reset()
     for ep in range(num_eps):
         ep_reward = 0.0
         ep_max_dist = 0.0
@@ -123,7 +123,7 @@ def evaluate_morphology(env, xi, num_eps=10):
 
         while not done and step_count < 500:
             with torch.no_grad():
-                actions = env.actor_critic.act_inference(obs)
+                actions = act_inference(obs)
             obs, _, rewards, dones, _ = env.step(actions)
             if isinstance(rewards, torch.Tensor):
                 ep_reward += rewards[0].item() if rewards.numel() > 0 else 0.0
@@ -143,7 +143,7 @@ def evaluate_morphology(env, xi, num_eps=10):
         total_eps += 1
 
         if not done:
-            obs = env.reset()
+            obs, _ = env.reset()
 
     avg_reward = np.mean(all_rewards) if all_rewards else 0.0
     avg_dist = np.mean(all_dist) if all_dist else 0.0
@@ -167,7 +167,7 @@ def finetune_policy(env, ppo_runner, steps=400):
 
 
 def main(args):
-    # headless controlled by --headless CLI flag
+    args.headless = True
 
     log_root = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -248,7 +248,8 @@ def main(args):
 
         # Evaluate
         print("Evaluating...")
-        score, metrics = evaluate_morphology(env, xi, num_eps=num_eval_eps)
+        act_inference = ppo_runner.get_inference_policy(device=env.device)
+        score, metrics = evaluate_morphology(env, act_inference, xi, num_eps=num_eval_eps)
         print(f"  Score: {score:.3f} | Dist: {metrics['distance']:.2f}m | "
               f"Height: {metrics['height']:.2f}m | Survival: {metrics['survival']:.2f}")
 

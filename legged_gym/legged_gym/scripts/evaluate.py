@@ -33,7 +33,7 @@ def evaluate(args):
     print(f"Evaluating for {num_eps} episodes...")
 
     metrics = defaultdict(list)
-    obs = env.reset()
+    obs, _ = env.reset()
 
     for ep in range(num_eps):
         ep_reward = 0.0
@@ -73,7 +73,7 @@ def evaluate(args):
         print(f"Ep {ep+1:3d}: dist={ep_dist:.2f}m, height={ep_max_height:.2f}m, "
               f"reward={ep_reward:.1f}, steps={step_count}, survived={bool(survived)}")
 
-        obs = env.reset()
+        obs, _ = env.reset()
 
     print("\n" + "=" * 60)
     print("Evaluation Results")
