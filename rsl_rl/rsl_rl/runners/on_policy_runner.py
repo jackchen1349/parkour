@@ -99,10 +99,10 @@ class OnPolicyRunner:
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
 
-            stop = time.time()
-            collection_time = stop - start
-            start = stop
-            self.alg.compute_returns(critic_obs)
+                stop = time.time()
+                collection_time = stop - start
+                start = stop
+                self.alg.compute_returns(critic_obs)
 
             mean_value_loss, mean_surrogate_loss, mean_estimator_loss, \
                 mean_priv_reg_loss, priv_reg_coef = self.alg.update()
@@ -129,6 +129,7 @@ class OnPolicyRunner:
         self.tot_time += locs['collection_time'] + locs['learn_time']
         iteration_time = locs['collection_time'] + locs['learn_time']
 
+        ep_string = ''
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:
                 infotensor = torch.tensor([], device=self.device)
@@ -140,6 +141,7 @@ class OnPolicyRunner:
                     infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
                 value = torch.mean(infotensor)
                 self.writer.add_scalar('Episode/' + key, value, locs['it'])
+                ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
 
         mean_std = self.alg.actor_critic.std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs
@@ -154,24 +156,30 @@ class OnPolicyRunner:
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
 
+        mean_rew = statistics.mean(locs['rewbuffer']) if len(locs['rewbuffer']) > 0 else 0.
+        mean_len = statistics.mean(locs['lenbuffer']) if len(locs['lenbuffer']) > 0 else 0.
         if len(locs['rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_reward',
-                                   statistics.mean(locs['rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_episode_length',
-                                   statistics.mean(locs['lenbuffer']), locs['it'])
+            self.writer.add_scalar('Train/mean_reward', mean_rew, locs['it'])
+            self.writer.add_scalar('Train/mean_episode_length', mean_len, locs['it'])
 
         s = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
-        print(f"""{'#' * width}
-{s.center(width, ' ')}
-
-{'Computation:':>{pad}} {fps:.0f} steps/s (col: {locs['collection_time']:.2f}s, learn: {locs['learn_time']:.2f}s)
-{'Value loss:':>{pad}} {locs['mean_value_loss']:.4f}
-{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}
-{'Estimator loss:':>{pad}} {locs['mean_estimator_loss']:.6f}
-{'Hist latent loss:':>{pad}} {locs['mean_hist_latent_loss']:.6f}
-{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}
-{'Mean ep length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}
-{'-' * width}""")
+        log_string = (f"""{'#' * width}\n"""
+                      f"""{s.center(width, ' ')}\n\n"""
+                      f"""{'Computation:':>{pad}} {fps:.0f} steps/s (col: {locs['collection_time']:.2f}s, learn: {locs['learn_time']:.2f}s)\n"""
+                      f"""{'Value loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+                      f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+                      f"""{'Estimator loss:':>{pad}} {locs['mean_estimator_loss']:.6f}\n"""
+                      f"""{'Priv reg loss:':>{pad}} {locs['mean_priv_reg_loss']:.6f}\n"""
+                      f"""{'Hist latent loss:':>{pad}} {locs['mean_hist_latent_loss']:.6f}\n"""
+                      f"""{'Priv reg coef:':>{pad}} {locs['priv_reg_coef']:.4f}\n"""
+                      f"""{'Mean action std:':>{pad}} {mean_std.item():.2f}\n"""
+                      f"""{'Mean reward:':>{pad}} {mean_rew:.2f}\n"""
+                      f"""{'Mean ep length:':>{pad}} {mean_len:.2f}\n""")
+        if ep_string:
+            log_string += f"""{'-' * width}\n"""
+            log_string += ep_string
+        log_string += f"""{'-' * width}"""
+        print(log_string)
 
     def save(self, path, infos=None):
         torch.save({
