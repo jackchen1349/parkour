@@ -162,23 +162,35 @@ class OnPolicyRunner:
             self.writer.add_scalar('Train/mean_reward', mean_rew, locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', mean_len, locs['it'])
 
+        curr_it = locs['it'] - self.current_learning_iteration
+        if curr_it <= 0:
+            curr_it = 1
+        eta = self.tot_time / curr_it * (locs['num_learning_iterations'] - curr_it)
+        eta_mins = eta // 60
+        eta_secs = eta % 60
+
         s = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
         log_string = (f"""{'#' * width}\n"""
                       f"""{s.center(width, ' ')}\n\n"""
-                      f"""{'Computation:':>{pad}} {fps:.0f} steps/s (col: {locs['collection_time']:.2f}s, learn: {locs['learn_time']:.2f}s)\n"""
-                      f"""{'Value loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+                      f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                      f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                       f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                       f"""{'Estimator loss:':>{pad}} {locs['mean_estimator_loss']:.6f}\n"""
                       f"""{'Priv reg loss:':>{pad}} {locs['mean_priv_reg_loss']:.6f}\n"""
                       f"""{'Hist latent loss:':>{pad}} {locs['mean_hist_latent_loss']:.6f}\n"""
                       f"""{'Priv reg coef:':>{pad}} {locs['priv_reg_coef']:.4f}\n"""
-                      f"""{'Mean action std:':>{pad}} {mean_std.item():.2f}\n"""
+                      f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                       f"""{'Mean reward:':>{pad}} {mean_rew:.2f}\n"""
-                      f"""{'Mean ep length:':>{pad}} {mean_len:.2f}\n""")
+                      f"""{'Mean episode length:':>{pad}} {mean_len:.2f}\n""")
         if ep_string:
             log_string += f"""{'-' * width}\n"""
             log_string += ep_string
-        log_string += f"""{'-' * width}"""
+        log_string += (f"""{'-' * width}\n"""
+                       f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
+                       f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
+                       f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
+                       f"""{'ETA:':>{pad}} {eta_mins:.0f} min {eta_secs:.1f} s\n"""
+                       f"""{'-' * width}""")
         print(log_string)
 
     def save(self, path, infos=None):
