@@ -105,9 +105,11 @@ class PPO:
             priv_explicit_estimated = self.estimator(proprio)
             obs_est[:, self.actor_critic.num_prop:
                     self.actor_critic.num_prop + self.actor_critic.num_priv_explicit] = priv_explicit_estimated
-            self.transition.actions = self.actor_critic.act(obs_est, hist_encoding).detach()
+            self.transition.actions = self.actor_critic.act(
+                obs_est, hist_encoding, privileged_obs=critic_obs).detach()
         else:
-            self.transition.actions = self.actor_critic.act(obs, hist_encoding).detach()
+            self.transition.actions = self.actor_critic.act(
+                obs, hist_encoding, privileged_obs=critic_obs).detach()
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(
             self.transition.actions).detach()

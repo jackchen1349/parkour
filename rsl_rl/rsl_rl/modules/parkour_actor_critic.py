@@ -251,30 +251,37 @@ class ParkourActorCritic(nn.Module):
         _, history = self._slice_privileged_obs(privileged_obs)
         return self.history_encoder(history.view(-1, self.num_hist, self.num_prop))
 
-    def _build_actor_input(self, observations, hist_encoding=False):
+    def _build_actor_input(self, observations, hist_encoding=False, privileged_obs=None):
         proprio, priv_explicit, _, height_scan = self._slice_obs(observations)
         scan_latent = self.scan_encoder(height_scan)
         if hist_encoding:
-            latent = self.infer_hist_latent(observations)
+            if privileged_obs is None:
+                raise ValueError("privileged_obs is required when hist_encoding=True")
+            latent = self.infer_hist_latent(privileged_obs)
         else:
             latent = self.infer_priv_latent(observations)
         return torch.cat([proprio, scan_latent, priv_explicit, latent], dim=-1)
 
-    def update_distribution(self, observations, hist_encoding=False):
-        actor_input = self._build_actor_input(observations, hist_encoding)
+    def update_distribution(self, observations, hist_encoding=False, privileged_obs=None):
+        actor_input = self._build_actor_input(observations, hist_encoding, privileged_obs)
         mean = self.actor(actor_input)
         self.distribution = Normal(mean, mean * 0. + self.std)
 
-    def act(self, observations, hist_encoding=False, **kwargs):
-        self.update_distribution(observations, hist_encoding)
+    def act(self, observations, hist_encoding=False, privileged_obs=None, **kwargs):
+        self.update_distribution(observations, hist_encoding, privileged_obs)
         return self.distribution.sample()
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations, hist_encoding=False, **kwargs):
-        """Deterministic inference for deployment."""
-        actor_input = self._build_actor_input(observations, hist_encoding)
+    def act_inference(self, observations, hist_encoding=False, privileged_obs=None, **kwargs):
+        """Deterministic inference for deployment.
+
+        Args:
+            observations: actor obs (215 dims)
+            privileged_obs: required when hist_encoding=True (450 dims, includes history)
+        """
+        actor_input = self._build_actor_input(observations, hist_encoding, privileged_obs)
         return self.actor(actor_input)
 
     def evaluate(self, critic_observations, **kwargs):
