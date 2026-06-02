@@ -31,8 +31,9 @@ class ParkourCfg(LeggedRobotCfg):
         n_priv = 3
         n_priv_latent = 33
         history_len = 5
-        num_observations = 215  # n_proprio(47)+n_priv(3)+n_priv_latent(33)+n_scan(132)
-        num_privileged_obs = 450  # num_observations(215)+history_len*n_proprio(235)
+        history_encoding = True
+        num_observations = 450  # n_proprio(47)+n_scan(132)+n_priv(3)+n_priv_latent(33)+history_len*n_proprio(235)
+        num_privileged_obs = None  # all info in obs_buf, matching extreme-parkour
         num_actions = 12
         episode_length_s = 20
         send_timeouts = True
@@ -41,6 +42,7 @@ class ParkourCfg(LeggedRobotCfg):
 
         next_goal_threshold = 0.2
         reach_goal_delay = 0.1
+        num_future_goal_obs = 2
 
         randomize_start_pos = True
         randomize_start_yaw = True
@@ -65,10 +67,10 @@ class ParkourCfg(LeggedRobotCfg):
         height = [0.02, 0.06]
         downsampled_scale = 0.075
         measure_horizontal_noise = 0.0
-        terrain_length = 18.
+        terrain_length = 8.
         terrain_width = 8.
         num_rows = 10
-        num_cols = 40
+        num_cols = 20
         slope_treshold = 1.5
         origin_zero_z = True
         max_init_terrain_level = 5
@@ -99,16 +101,28 @@ class ParkourCfg(LeggedRobotCfg):
     class commands(LeggedRobotCfg.commands):
         num_commands = 4
         resampling_time = 6.
-        heading_command = False
+        heading_command = True
         curriculum = False
         lin_vel_clip = 0.2
         ang_vel_clip = 0.4
 
         class ranges:
-            lin_vel_x = [0.0, 0.0]
+            lin_vel_x = [0.3, 0.8]       # forward speed cap for tracking_goal_vel (matches extreme-parkour max_ranges)
             lin_vel_y = [0.0, 0.0]
             ang_vel_yaw = [0.0, 0.0]
-            heading = [-3.14, 3.14]
+            heading = [0, 0]
+
+        class max_ranges:
+            lin_vel_x = [0.3, 0.8]       # same as ranges since curriculum=False
+            lin_vel_y = [-0.3, 0.3]
+            ang_vel_yaw = [0.0, 0.0]
+            heading = [-1.6, 1.6]
+
+        class crclm_incremnt:
+            lin_vel_x = 0.1
+            lin_vel_y = 0.1
+            ang_vel_yaw = 0.1
+            heading = 0.5
 
     class init_state(LeggedRobotCfg.init_state):
         pos = [0.0, 0.0, 0.375]
@@ -152,7 +166,7 @@ class ParkourCfg(LeggedRobotCfg):
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 1.0
         soft_torque_limit = 1.0
-        base_height_target = 0.35
+        base_height_target = 0.25
         max_contact_force = 40.0
 
         class scales:
@@ -162,13 +176,13 @@ class ParkourCfg(LeggedRobotCfg):
             ang_vel_xy = -0.05
             orientation = -1.0
             dof_acc = -2.5e-7
-            collision = 0.0
+            collision = -10.0
             action_rate = -0.1
             delta_torques = -1.0e-7
             torques = -0.00001
             hip_pos = -0.5
             dof_error = -0.04
-            feet_stumble = 0.0
+            feet_stumble = -1.0
             feet_edge = -1.0
             dof_pos_limits = 0.0
             termination = 0.0

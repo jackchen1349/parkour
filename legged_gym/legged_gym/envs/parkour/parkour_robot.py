@@ -47,6 +47,7 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self._assets = []
         self._asset_indices = None
         self.last_torques = None
+        self.global_counter = 0
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
 
     # ---- Asset loading (multi-morphology) ----
@@ -165,7 +166,7 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
 
             self.terrain_goals = torch.from_numpy(self.terrain.goals).to(self.device).to(torch.float)
             self.env_goals = torch.zeros(
-                self.num_envs, self.cfg.terrain.num_goals + 2, 3,
+                self.num_envs, self.cfg.terrain.num_goals + self.cfg.env.num_future_goal_obs, 3,
                 device=self.device, requires_grad=False
             )
             self.cur_goal_idx = torch.zeros(self.num_envs, device=self.device, requires_grad=False, dtype=torch.long)
@@ -191,7 +192,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
     def _update_env_goals(self):
         temp = self.terrain_goals[self.terrain_levels, self.terrain_types]
         last_col = temp[:, -1].unsqueeze(1)
-        self.env_goals[:] = torch.cat((temp, last_col.repeat(1, 2, 1)), dim=1)[:]
+        self.env_goals[:] = torch.cat(
+            (temp, last_col.repeat(1, self.cfg.env.num_future_goal_obs, 1)), dim=1)[:]
         self.cur_goals = self._gather_cur_goals()
         self.next_goals = self._gather_cur_goals(future=1)
 
@@ -245,18 +247,17 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
                 self.terrain.tot_rows, self.terrain.tot_cols
             ).to(self.device)
 
-    # ---- Observations ----
+    # ---- Observations (matches extreme-parkour: all info in single obs_buf) ----
 
     def compute_observations(self):
-        """Paper state decomposition (Sec 2.1):
-           xt (47):  ang_vel(3), roll(1), pitch(1), delta_yaw(1), delta_next_yaw(1),
-                     dof_pos(12), dof_vel(12), prev_action(12), contact_filt(4)
-           e't (3):  base_lin_vel (explicit privileged)
-           et (33):  mass(1), com(3), morph_params(4), friction(1), motor_kp(12), motor_kd(12)
-           mt (132): height sampling points (exteroceptive)
-           obs_buf = [xt, e't, et, mt] = 215
-           privileged = [xt, e't, et, mt, ht(5*47=235)] = 450
+        """obs_buf = [xt(47) | mt(132) | e't(3) | et(33) | ht(5*47=235)] = 450
+           No separate privileged_obs_buf (num_privileged_obs=None).
         """
+        # Update yaw deltas every 5 steps (ref extreme-parkour L388-390)
+        if self.global_counter % 5 == 0:
+            self.delta_yaw = self.target_yaw - self.yaw
+            self.delta_next_yaw = self.next_target_yaw - self.yaw
+
         # xt: proprioceptive state [47]
         xt = torch.cat((
             self.base_ang_vel * self.obs_scales.ang_vel,                               # 3
@@ -270,41 +271,45 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
             self.contact_filt.float() - 0.5,                                            # 4
         ), dim=-1)  # = 47
 
-        # e't: explicit privileged state — body linear velocity [3]
+        # e't: explicit privileged — body linear velocity [3]
         et_prime = self.base_lin_vel * self.obs_scales.lin_vel
 
-        # et: privileged state — mass(1), COM(3), morph(4), friction(1), motor(24) [33]
+        # et: privileged latent [33]
         et = torch.cat((
             self._body_total_mass[:, None],                                              # 1
             self._body_com,                                                              # 3
-            self.mass_params_tensor,                                                     # 4  (xi_0..xi_3)
+            self.mass_params_tensor,                                                     # 4
             self.friction_coeffs_tensor,                                                 # 1
-            self.motor_strength[0] - 1.,                                                 # 12 (kp)
-            self.motor_strength[1] - 1.,                                                 # 12 (kd)
+            self.motor_strength[0] - 1.,                                                 # 12
+            self.motor_strength[1] - 1.,                                                 # 12
         ), dim=-1)  # = 33
 
-        # mt: exteroceptive state — height sampling points, robot-centric [132]
+        # mt: exteroceptive — height samples [132]
         heights = self.root_states[:, 2].unsqueeze(1) - 0.35 - self.measured_heights
         mt = torch.clip(heights, -1., 1.) * self.obs_scales.height_measurements
 
-        # obs_buf = [xt(47), e't(3), et(33), mt(132)] = 215
-        self.obs_buf[:] = torch.cat([xt, et_prime, et, mt], dim=-1)
-
-        if self.num_privileged_obs is not None:
-            # privileged = [xt, e't, et, mt, ht(5*47=235)] = 450
-            self.privileged_obs_buf = torch.cat([
-                self.obs_buf,
-                self.obs_history_buf.view(self.num_envs, -1),
-            ], dim=-1)
+        # obs_buf = [xt | mt | e't | et | ht_flattened] = 47+132+3+33+235 = 450
+        self.obs_buf = torch.cat([
+            xt,
+            mt,
+            et_prime,
+            et,
+            self.obs_history_buf.view(self.num_envs, -1),
+        ], dim=-1)
 
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
 
-        # Update proprioceptive history (store xt for next steps)
+        # ---- update history: store xt (47 dims) with yaw masked (ref extreme-parkour L420) ----
+        xt_masked = self.obs_buf[:, :self.cfg.env.n_proprio].clone()
+        xt_masked[:, 5:7] = 0.  # mask delta_yaw(5), delta_next_yaw(6)
         self.obs_history_buf = torch.where(
             (self.episode_length_buf <= 1)[:, None, None],
-            xt.unsqueeze(1).repeat(1, self.cfg.env.history_len, 1),
-            torch.cat([self.obs_history_buf[:, 1:], xt.unsqueeze(1)], dim=1),
+            xt_masked.unsqueeze(1).repeat(1, self.cfg.env.history_len, 1),
+            torch.cat([
+                self.obs_history_buf[:, 1:],
+                xt_masked.unsqueeze(1)
+            ], dim=1),
         )
 
     def _get_noise_scale_vec(self, cfg):
@@ -325,8 +330,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         noise_vec[7:19] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
         # xt: dof_vel(12)
         noise_vec[19:31] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        # mt — height measurement noise
-        mt_start = n_prop + n_priv + n_priv_latent
+        # mt: height scan [47:179] (after xt in new layout)
+        mt_start = n_prop  # xt(47)
         noise_vec[mt_start:mt_start + n_scan] = (
             noise_scales.height_measurements * noise_level * self.obs_scales.height_measurements)
         return noise_vec
@@ -451,15 +456,26 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
 
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
         self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
+
+        # heading_command: compute ang_vel from heading error (ref extreme-parkour L555-559)
+        if self.cfg.commands.heading_command:
+            forward = quat_apply(self.base_quat, self.forward_vec)
+            heading = torch.atan2(forward[:, 1], forward[:, 0])
+            self.commands[:, 2] = torch.clip(
+                0.8 * wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
+            self.commands[:, 2] *= torch.abs(self.commands[:, 2]) > self.cfg.commands.ang_vel_clip
+
         self._update_goals()
-        self.delta_yaw = self.target_yaw - self.yaw
-        self.delta_next_yaw = self.next_target_yaw - self.yaw
 
         if self.cfg.terrain.measure_heights:
             self.measured_heights = self._get_heights()
 
     def post_physics_step(self):
+        self.global_counter += 1
         super().post_physics_step()
+        # Refresh goals after reset (ref extreme-parkour L261-262)
+        self.cur_goals = self._gather_cur_goals()
+        self.next_goals = self._gather_cur_goals(future=1)
         self.last_torques[:] = self.torques[:]
 
     # ---- Reset and curriculum ----
@@ -553,12 +569,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.reset_buf |= self.time_out_buf
 
     def _resample_commands(self, env_ids):
-        if len(env_ids) == 0:
-            return
-        self.commands[env_ids, 0] = self.cfg.parkour.forward_speed_target
-        self.commands[env_ids, 1] = 0.
-        self.commands[env_ids, 2] = 0.
-        self.commands[env_ids, 3] = 0.
+        """Use base class: samples commands[:,0] (vel cap) from command_ranges."""
+        super()._resample_commands(env_ids)
 
     # ---- Height Measurements ----
 

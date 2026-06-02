@@ -62,9 +62,7 @@ class OnPolicyRunner:
                 self.env.episode_length_buf, high=int(self.env.max_episode_length))
 
         obs = self.env.get_observations()
-        privileged_obs = self.env.get_privileged_observations()
-        critic_obs = privileged_obs if privileged_obs is not None else obs
-        obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
+        obs = obs.to(self.device)
         self.alg.actor_critic.train()
 
         ep_infos = []
@@ -80,12 +78,10 @@ class OnPolicyRunner:
 
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs, hist_encoding=hist_encoding)
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
-                    critic_obs = privileged_obs if privileged_obs is not None else obs
-                    obs, critic_obs, rewards, dones = (
-                        obs.to(self.device), critic_obs.to(self.device),
-                        rewards.to(self.device), dones.to(self.device))
+                    actions = self.alg.act(obs, hist_encoding=hist_encoding)
+                    obs, _, rewards, dones, infos = self.env.step(actions)
+                    obs, rewards, dones = (
+                        obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:
@@ -102,7 +98,7 @@ class OnPolicyRunner:
                 stop = time.time()
                 collection_time = stop - start
                 start = stop
-                self.alg.compute_returns(critic_obs)
+                self.alg.compute_returns(obs)
 
             mean_value_loss, mean_surrogate_loss, mean_estimator_loss, \
                 mean_priv_reg_loss, priv_reg_coef = self.alg.update()

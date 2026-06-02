@@ -95,28 +95,26 @@ class PPO:
     def test_mode(self): self.actor_critic.test()
     def train_mode(self): self.actor_critic.train()
 
-    def act(self, obs, critic_obs, hist_encoding=False):
+    def act(self, obs, hist_encoding=False):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
-        # Optionally replace priv_explicit (e't) with Estimator prediction for sim2real
+        # Optionally replace e't (priv_explicit) with Estimator prediction for sim2real
         if self.train_with_estimated_states:
             obs_est = obs.clone()
+            s = self.actor_critic.num_prop + self.actor_critic.num_scan  # 47+132=179
             proprio = obs_est[:, :self.actor_critic.num_prop]
             priv_explicit_estimated = self.estimator(proprio)
-            obs_est[:, self.actor_critic.num_prop:
-                    self.actor_critic.num_prop + self.actor_critic.num_priv_explicit] = priv_explicit_estimated
-            self.transition.actions = self.actor_critic.act(
-                obs_est, hist_encoding, privileged_obs=critic_obs).detach()
+            obs_est[:, s:s + self.actor_critic.num_priv_explicit] = priv_explicit_estimated
+            self.transition.actions = self.actor_critic.act(obs_est, hist_encoding).detach()
         else:
-            self.transition.actions = self.actor_critic.act(
-                obs, hist_encoding, privileged_obs=critic_obs).detach()
-        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+            self.transition.actions = self.actor_critic.act(obs, hist_encoding).detach()
+        self.transition.values = self.actor_critic.evaluate(obs).detach()
         self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(
             self.transition.actions).detach()
         self.transition.action_mean = self.actor_critic.action_mean.detach()
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         self.transition.observations = obs
-        self.transition.critic_observations = critic_obs
+        self.transition.critic_observations = obs
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos):
@@ -152,9 +150,10 @@ class PPO:
             entropy_batch = self.actor_critic.entropy
 
             # ---- priv_reg_loss: align priv_encoder(et) with history_encoder(ht) ----
+            # Both extract from obs_batch (history at tail for hist_latent)
             priv_latent = self.actor_critic.infer_priv_latent(obs_batch)
             with torch.inference_mode():
-                hist_latent = self.actor_critic.infer_hist_latent(critic_obs_batch)
+                hist_latent = self.actor_critic.infer_hist_latent(obs_batch)
             priv_reg_loss = (priv_latent - hist_latent.detach()).norm(p=2, dim=1).mean()
             priv_reg_stage = min(max((self.counter - self.priv_reg_coef_schedual[2]), 0)
                                  / self.priv_reg_coef_schedual[3], 1)
@@ -232,7 +231,7 @@ class PPO:
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
             with torch.inference_mode():
                 priv_latent = self.actor_critic.infer_priv_latent(obs_batch)
-            hist_latent = self.actor_critic.infer_hist_latent(critic_obs_batch)
+            hist_latent = self.actor_critic.infer_hist_latent(obs_batch)
             hist_latent_loss = (priv_latent.detach() - hist_latent).norm(p=2, dim=1).mean()
             self.hist_encoder_optimizer.zero_grad()
             hist_latent_loss.backward()

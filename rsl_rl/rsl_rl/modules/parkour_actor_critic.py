@@ -1,16 +1,20 @@
-"""RMA-style asymmetric Actor-Critic for parkour co-design.
+"""RMA-style asymmetric Actor-Critic matching extreme-parkour.
 
-Matches extreme-parkour architecture with independent encoders:
-  scan_encoder(mt) → scan_latent
-  priv_encoder(et) → priv_latent (teacher, has access to privileged info)
-  history_encoder(ht) → hist_latent (student, uses proprioceptive history)
+Single obs_buf (no separate privileged_obs):
+  obs_buf (450 dims) = [xt(47) | mt(132) | e't(3) | et(33) | ht(5*47=235)]
+
+Architecture:
+  ScanEncoder(mt) → scan_latent
+  PrivEncoder(et) → priv_latent   (teacher, sees privileged info)
+  HistoryEncoder(ht) → hist_latent (student, sees proprio history)
 
   Actor([xt, scan_latent, e't, latent]) → actions(12)
-    latent = priv_encoder(et)  in non-hist mode (teacher)
-    latent = history_encoder(ht) in hist mode (student / DAgger)
-  Critic(raw_privileged_obs) → value(1)  (no encoding, direct raw input)
+    hist_encoding=False → latent = PrivEncoder(et)
+    hist_encoding=True  → latent = HistoryEncoder(ht)  (DAgger)
 
-  Estimator(xt) → predicted_e't  (separate: predicts priv_explicit from proprio)
+  Critic(raw obs_buf) → value(1)  (no encoding, direct raw input)
+
+  Estimator(xt) → predicted_e't  (separate: predicts e't from xt for sim2real)
 """
 
 import torch
@@ -76,11 +80,8 @@ class StateHistoryEncoder(nn.Module):
 
 
 class ParkourEstimator(nn.Module):
-    """Predicts priv_explicit (e't: base_lin_vel) from proprio (xt) for sim2real.
+    """Predicts priv_explicit (e't: base_lin_vel) from proprio (xt) for sim2real."""
 
-    NOT used as input to the Actor — only for priv_reg_loss alignment.
-    Used at deployment time when real priv_explicit is unavailable.
-    """
     def __init__(self, input_dim, output_dim, hidden_dims=None, activation="elu"):
         super().__init__()
         if hidden_dims is None:
@@ -100,24 +101,14 @@ class ParkourEstimator(nn.Module):
 
 
 class ParkourActorCritic(nn.Module):
-    """RMA-style asymmetric Actor-Critic matching extreme-parkour.
+    """RMA-style asymmetric Actor-Critic. Single obs_buf, no privileged_obs.
 
-    Observation layout (obs_buf, dim 215):
-        [0:47]    proprio (xt)
-        [47:50]   priv_explicit (e't)
-        [50:83]   priv_latent (et)
-        [83:215]  height_scan (mt)
-
-    Privileged observation (450 dims):
-        [0:215]   same as obs_buf
-        [215:450] history stacked (5 * 47 = 235)
-
-    Architecture:
-        ScanEncoder(mt[132]) → scan_latent[scan_encoder_dims[-1]]
-        PrivEncoder(et[33]) → priv_latent[priv_encoder_dims[-1]]
-        HistoryEncoder(ht: 5×47 Conv1D) → hist_latent[priv_encoder_dims[-1]]
-        Actor([xt + scan_latent + e't + latent]) → actions(12)
-        Critic(raw_privileged_obs) → value(1)  (no encoding)
+    obs_buf (450 dims):
+        [0:47]    xt  — proprio
+        [47:179]  mt  — height scan (132)
+        [179:182] e't — priv_explicit (3)
+        [182:215] et  — priv_latent (33)
+        [215:450] ht  — history flattened (5 * 47 = 235)
     """
     is_recurrent = False
 
@@ -127,7 +118,7 @@ class ParkourActorCritic(nn.Module):
                  scan_encoder_dims=(128, 64, 32),
                  actor_hidden_dims=(512, 256, 128),
                  critic_hidden_dims=(512, 256, 128),
-                 priv_encoder_dims=(64, 32),
+                 priv_encoder_dims=(64, 20),
                  activation='elu',
                  init_noise_std=1.0,
                  **kwargs):
@@ -144,9 +135,7 @@ class ParkourActorCritic(nn.Module):
 
         # ---- Scan encoder: mt → scan_latent ----
         if len(scan_encoder_dims) > 0 and num_scan > 0:
-            scan_enc_layers = []
-            scan_enc_layers.append(nn.Linear(num_scan, scan_encoder_dims[0]))
-            scan_enc_layers.append(act)
+            scan_enc_layers = [nn.Linear(num_scan, scan_encoder_dims[0]), act]
             for l in range(len(scan_encoder_dims)):
                 if l == len(scan_encoder_dims) - 1:
                     scan_enc_layers.append(nn.Linear(scan_encoder_dims[l-1], scan_encoder_dims[l]))
@@ -162,9 +151,7 @@ class ParkourActorCritic(nn.Module):
 
         # ---- Privileged encoder: et → priv_latent (teacher) ----
         if len(priv_encoder_dims) > 0:
-            priv_enc_layers = []
-            priv_enc_layers.append(nn.Linear(num_priv_latent, priv_encoder_dims[0]))
-            priv_enc_layers.append(act)
+            priv_enc_layers = [nn.Linear(num_priv_latent, priv_encoder_dims[0]), act]
             for l in range(len(priv_encoder_dims) - 1):
                 priv_enc_layers.append(nn.Linear(priv_encoder_dims[l], priv_encoder_dims[l + 1]))
                 priv_enc_layers.append(act)
@@ -178,7 +165,7 @@ class ParkourActorCritic(nn.Module):
         self.history_encoder = StateHistoryEncoder(
             act, num_prop, num_hist, priv_encoder_output_dim)
 
-        # ---- Actor: [xt + scan_latent + e't + latent] → actions ----
+        # ---- Actor ----
         actor_in = (num_prop + self.scan_encoder_output_dim
                     + num_priv_explicit + priv_encoder_output_dim)
         actor_layers = [nn.Linear(actor_in, actor_hidden_dims[0]), act]
@@ -190,9 +177,8 @@ class ParkourActorCritic(nn.Module):
                 actor_layers.append(act)
         self.actor = nn.Sequential(*actor_layers)
 
-        # ---- Critic: raw privileged obs → value (NO encoding) ----
-        critic_in = (num_priv_latent + num_scan + num_priv_explicit
-                     + num_prop + num_hist * num_prop)
+        # ---- Critic: raw obs_buf → value (no encoding) ----
+        critic_in = num_critic_obs  # = num_obs = 450
         critic_layers = [nn.Linear(critic_in, critic_hidden_dims[0]), act]
         for l in range(len(critic_hidden_dims)):
             if l == len(critic_hidden_dims) - 1:
@@ -223,21 +209,14 @@ class ParkourActorCritic(nn.Module):
     def entropy(self): return self.distribution.entropy().sum(dim=-1)
 
     def _slice_obs(self, obs):
-        """Slice obs_buf into components."""
-        proprio = obs[:, :self.num_prop]
-        priv_explicit = obs[:, self.num_prop:self.num_prop + self.num_priv_explicit]
-        priv_latent = obs[:, self.num_prop + self.num_priv_explicit:
-                          self.num_prop + self.num_priv_explicit + self.num_priv_latent]
-        height_scan = obs[:, self.num_prop + self.num_priv_explicit + self.num_priv_latent:
-                          self.num_prop + self.num_priv_explicit + self.num_priv_latent + self.num_scan]
+        """obs_buf layout: [xt(47) | mt(132) | e't(3) | et(33) | ht(235)]"""
+        proprio = obs[:, :self.num_prop]                                                    # [0:47]
+        height_scan = obs[:, self.num_prop:self.num_prop + self.num_scan]                   # [47:179]
+        s = self.num_prop + self.num_scan                                                   # 179
+        priv_explicit = obs[:, s:s + self.num_priv_explicit]                                # [179:182]
+        s = s + self.num_priv_explicit                                                      # 182
+        priv_latent = obs[:, s:s + self.num_priv_latent]                                    # [182:215]
         return proprio, priv_explicit, priv_latent, height_scan
-
-    def _slice_privileged_obs(self, privileged_obs):
-        """Slice privileged observation: obs_buf(215) + history(5*47=235)."""
-        obs_len = self.num_prop + self.num_priv_explicit + self.num_priv_latent + self.num_scan
-        obs_buf = privileged_obs[:, :obs_len]
-        history = privileged_obs[:, -self.num_hist * self.num_prop:]
-        return obs_buf, history
 
     def infer_scan_latent(self, obs):
         _, _, _, height_scan = self._slice_obs(obs)
@@ -247,43 +226,37 @@ class ParkourActorCritic(nn.Module):
         _, _, priv_latent, _ = self._slice_obs(obs)
         return self.priv_encoder(priv_latent)
 
-    def infer_hist_latent(self, privileged_obs):
-        _, history = self._slice_privileged_obs(privileged_obs)
+    def infer_hist_latent(self, obs):
+        """History is at the tail of obs_buf: 5 frames × num_prop (47) = 235 dims."""
+        history = obs[:, -self.num_hist * self.num_prop:]
         return self.history_encoder(history.view(-1, self.num_hist, self.num_prop))
 
-    def _build_actor_input(self, observations, hist_encoding=False, privileged_obs=None):
+    def _build_actor_input(self, observations, hist_encoding=False):
         proprio, priv_explicit, _, height_scan = self._slice_obs(observations)
         scan_latent = self.scan_encoder(height_scan)
         if hist_encoding:
-            if privileged_obs is None:
-                raise ValueError("privileged_obs is required when hist_encoding=True")
-            latent = self.infer_hist_latent(privileged_obs)
+            latent = self.infer_hist_latent(observations)
         else:
             latent = self.infer_priv_latent(observations)
         return torch.cat([proprio, scan_latent, priv_explicit, latent], dim=-1)
 
-    def update_distribution(self, observations, hist_encoding=False, privileged_obs=None):
-        actor_input = self._build_actor_input(observations, hist_encoding, privileged_obs)
+    def update_distribution(self, observations, hist_encoding=False):
+        actor_input = self._build_actor_input(observations, hist_encoding)
         mean = self.actor(actor_input)
         self.distribution = Normal(mean, mean * 0. + self.std)
 
-    def act(self, observations, hist_encoding=False, privileged_obs=None, **kwargs):
-        self.update_distribution(observations, hist_encoding, privileged_obs)
+    def act(self, observations, hist_encoding=False, **kwargs):
+        self.update_distribution(observations, hist_encoding)
         return self.distribution.sample()
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def act_inference(self, observations, hist_encoding=False, privileged_obs=None, **kwargs):
-        """Deterministic inference for deployment.
-
-        Args:
-            observations: actor obs (215 dims)
-            privileged_obs: required when hist_encoding=True (450 dims, includes history)
-        """
-        actor_input = self._build_actor_input(observations, hist_encoding, privileged_obs)
+    def act_inference(self, observations, hist_encoding=False, **kwargs):
+        """Deterministic inference for deployment."""
+        actor_input = self._build_actor_input(observations, hist_encoding)
         return self.actor(actor_input)
 
     def evaluate(self, critic_observations, **kwargs):
-        """Critic takes raw privileged observation directly — NO encoding."""
+        """Critic takes raw obs_buf directly — NO encoding."""
         return self.critic(critic_observations)
