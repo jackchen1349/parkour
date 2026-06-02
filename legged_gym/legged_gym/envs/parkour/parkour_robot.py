@@ -13,7 +13,7 @@ import torch
 import numpy as np
 from isaacgym import gymapi, gymtorch
 from isaacgym.torch_utils import *
-from legged_gym.utils.math import quat_apply_yaw
+from legged_gym.utils.math import *
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs.base.legged_robot import LeggedRobot

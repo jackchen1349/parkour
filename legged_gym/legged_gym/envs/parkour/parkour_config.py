@@ -54,7 +54,6 @@ class ParkourCfg(LeggedRobotCfg):
         mesh_type = 'trimesh'
         horizontal_scale = 0.05
         vertical_scale = 0.005
-        edge_width_thresh = 0.05
         border_size = 5
         curriculum = True
         static_friction = 1.0
@@ -202,7 +201,7 @@ class ParkourCfg(LeggedRobotCfg):
         clip_actions = 1.2
 
     class noise(LeggedRobotCfg.noise):
-        add_noise = True
+        add_noise = False
         noise_level = 1.0
 
         class noise_scales:
@@ -250,7 +249,6 @@ class ParkourCfgPPO(LeggedRobotCfgPPO):
         scan_encoder_dims = [128, 64, 32]       # mt → scan_latent
         priv_encoder_dims = [64, 20]             # et → priv_latent (teacher)
         history_encoder_output_dim = 20          # ht → hist_latent (student, matches priv output)
-        estimator_hidden_dims = [128, 64]       # xt → predicted_e't (separate sim2real module)
 
     class algorithm:
         value_loss_coef = 1.0
@@ -259,7 +257,7 @@ class ParkourCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
         num_learning_epochs = 5
         num_mini_batches = 4
-        learning_rate = 1.0e-3
+        learning_rate = 2.e-4
         schedule = 'adaptive'
         gamma = 0.98
         lam = 0.95
@@ -268,7 +266,7 @@ class ParkourCfgPPO(LeggedRobotCfgPPO):
         dagger_update_freq = 20
         priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
         priv_reg_coef_schedual_resume = [0, 0.1, 0, 1]
-        estimator_hidden_dims = [256, 128]       # xt → predicted_e't
+        estimator_hidden_dims = [128, 64]       # xt → predicted_e't
         train_with_estimated_states = True
 
     class runner:

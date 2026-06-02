@@ -69,7 +69,7 @@ class PPO:
             hidden_dims=estimator_hidden_dims,
             activation='elu',
         ).to(self.device)
-        self.estimator_optimizer = optim.Adam(self.estimator.parameters(), lr=learning_rate)
+        self.estimator_optimizer = optim.Adam(self.estimator.parameters(), lr=1.e-4)
         self.train_with_estimated_states = train_with_estimated_states
 
         self.transition = RolloutStorage.Transition()
