@@ -110,9 +110,26 @@ class ParkourHeightField(Terrain):
 
         elif choice < self.proportions[10]:
             idx = 11
-            difficulty_wall = min(difficulty * 1.3, 1.0)
-            wall_width = max(4 - difficulty_wall * 4, 0.1)
-            half_sloped_terrain(terrain, wall_width=wall_width, start2center=0.5, max_height=1.5)
+            if self.cfg.all_vertical:
+                half_slope_difficulty = 1.0
+            else:
+                difficulty_wall = difficulty * 1.3
+                if not self.cfg.no_flat:
+                    difficulty_wall -= 0.1
+                if difficulty_wall > 1:
+                    half_slope_difficulty = 1.0
+                elif difficulty_wall < 0:
+                    self.add_roughness(terrain)
+                    terrain.slope_vector = np.array([1, 0., 0]).astype(np.float32)
+                    terrain.idx = idx
+                    return terrain
+                else:
+                    half_slope_difficulty = difficulty_wall
+            wall_width = 4 - half_slope_difficulty * 4
+            if self.cfg.flat_wall:
+                half_sloped_terrain(terrain, wall_width=4, start2center=0.5, max_height=0.00)
+            else:
+                half_sloped_terrain(terrain, wall_width=wall_width, start2center=0.5, max_height=1.5)
             max_height = terrain.height_field_raw.max()
             top_mask = terrain.height_field_raw > max_height - 0.05
             self.add_roughness(terrain, difficulty=1)
@@ -137,9 +154,9 @@ class ParkourHeightField(Terrain):
 
         elif choice < self.proportions[14]:
             idx = 15
-            x_range = [0.5, 0.8 + 0.3 * difficulty]
+            x_range = [-0.1, 0.1 + 0.3 * difficulty]
             y_range = [0.2, 0.3 + 0.1 * difficulty]
-            stone_len = [0.6 - 0.2 * difficulty, 0.8 - 0.2 * difficulty]
+            stone_len = [0.9 - 0.3 * difficulty, 1 - 0.2 * difficulty]
             incline_height = 0.25 * difficulty
             last_incline_height = incline_height + 0.1 - 0.1 * difficulty
             parkour_terrain(terrain,
@@ -158,7 +175,7 @@ class ParkourHeightField(Terrain):
                                    stone_len=0.1 + 0.3 * difficulty,
                                    hurdle_height_range=[0.1 + 0.1 * difficulty, 0.15 + 0.25 * difficulty],
                                    pad_height=0,
-                                   x_range=[0.8, 1.5],
+                                   x_range=[1.2, 2.2],
                                    y_range=self.cfg.y_range,
                                    half_valid_width=[0.4, 0.8])
             self.add_roughness(terrain, difficulty)
@@ -180,7 +197,7 @@ class ParkourHeightField(Terrain):
             parkour_step_terrain(terrain,
                                  num_stones=self.num_goals - 2,
                                  step_height=0.1 + 0.35 * difficulty,
-                                 x_range=[0.3, 1.0],
+                                 x_range=[0.3, 1.5],
                                  y_range=self.cfg.y_range,
                                  half_valid_width=[0.5, 1],
                                  pad_height=0)
@@ -193,7 +210,7 @@ class ParkourHeightField(Terrain):
                                 gap_size=0.1 + 0.7 * difficulty,
                                 gap_depth=[0.2, 1],
                                 pad_height=0,
-                                x_range=[0.5, 1.2],
+                                x_range=[0.8, 1.5],
                                 y_range=self.cfg.y_range,
                                 half_valid_width=[0.6, 1.2])
             self.add_roughness(terrain, difficulty)
@@ -252,7 +269,7 @@ class ParkourHeightField(Terrain):
 def parkour_terrain(terrain, platform_len=2.5, platform_height=0., num_stones=4,
                     x_range=None, y_range=None, z_range=None,
                     stone_len=1.0, stone_width=0.6, pad_width=0.1, pad_height=0.5,
-                    incline_height=0.1, last_incline_height=0.6, last_stone_len=0.8,
+                    incline_height=0.1, last_incline_height=0.6, last_stone_len=1.6,
                     pit_depth=None):
     """Stepping stones with alternating left/right inclines. Ref: extreme-parkour."""
     if x_range is None: x_range = [1.8, 1.9]

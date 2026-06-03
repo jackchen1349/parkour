@@ -14,8 +14,6 @@ import torch
 
 
 class ParkourRewards:
-    TERRAIN_GAP = 19
-    TERRAIN_STEP = 18
 
     def _reward_tracking_goal_vel(self):
         """Vel toward goal, capped at command. Ref: extreme-parkour L1226."""

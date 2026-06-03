@@ -9,11 +9,12 @@ Extends LeggedRobot with:
 """
 
 import os
+import tempfile
 import torch
 import numpy as np
 from isaacgym import gymapi, gymtorch
 from isaacgym.torch_utils import *
-from legged_gym.utils.math import *
+from legged_gym.utils.math import quat_apply_yaw, wrap_to_pi
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs.base.legged_robot import LeggedRobot
@@ -46,11 +47,23 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self._morphology_params_per_env = None
         self._assets = []
         self._asset_indices = None
-        self.last_torques = None
         self.global_counter = 0
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
 
     # ---- Asset loading (multi-morphology) ----
+
+    def _load_asset_from_urdf(self, urdf_str, prefix):
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.urdf', delete=False,
+            dir=os.path.join(LEGGED_GYM_ROOT_DIR, 'resources/robots/parkour_quadruped/urdf'),
+            prefix=prefix
+        ) as f:
+            f.write(urdf_str)
+            tmp_path = f.name
+        asset = self.gym.load_asset(self.sim, os.path.dirname(tmp_path),
+                                    os.path.basename(tmp_path), self._create_asset_options())
+        os.unlink(tmp_path)
+        return asset
 
     def _load_robot_asset(self):
         if not self._spatial_dr:
@@ -61,39 +74,21 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
                 xi = xi.float()
             self._morphology_params_per_env = xi.unsqueeze(0).repeat(self.num_envs, 1)
             urdf_str = self._morphology_manager.build_urdf_string(xi)
-            asset_options = self._create_asset_options()
-            import tempfile
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.urdf', delete=False,
-                dir=os.path.join(LEGGED_GYM_ROOT_DIR, 'resources/robots/parkour_quadruped/urdf'),
-                prefix='finetune_'
-            ) as f:
-                f.write(urdf_str)
-                tmp_path = f.name
-            asset = self.gym.load_asset(self.sim, os.path.dirname(tmp_path), os.path.basename(tmp_path), asset_options)
+            asset = self._load_asset_from_urdf(urdf_str, 'finetune_')
             self._assets = [asset]
-            os.unlink(tmp_path)
             return asset
 
         num_buckets = self.cfg.morphology.num_buckets
         xi_samples = self._morphology_manager.sample_morphologies(num_buckets)
         self._morphology_params = xi_samples
 
-        assets = []
-        asset_options = self._create_asset_options()
-        for i in range(num_buckets):
-            urdf_str = self._morphology_manager.build_urdf_string(xi_samples[i])
-            import tempfile
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.urdf', delete=False,
-                dir=os.path.join(LEGGED_GYM_ROOT_DIR, 'resources/robots/parkour_quadruped/urdf'),
-                prefix=f'morph_{i:03d}_'
-            ) as f:
-                f.write(urdf_str)
-                tmp_path = f.name
-            asset = self.gym.load_asset(self.sim, os.path.dirname(tmp_path), os.path.basename(tmp_path), asset_options)
-            assets.append(asset)
-            os.unlink(tmp_path)
+        assets = [
+            self._load_asset_from_urdf(
+                self._morphology_manager.build_urdf_string(xi_samples[i]),
+                f'morph_{i:03d}_'
+            )
+            for i in range(num_buckets)
+        ]
 
         self._assets = assets
         env_ids = torch.arange(self.num_envs)
@@ -137,6 +132,10 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
             self._create_trimesh()
         elif mesh_type is not None:
             raise ValueError(f"Terrain mesh type not recognised: {mesh_type}")
+
+        if mesh_type in ['heightfield', 'trimesh']:
+            self.height_samples = torch.tensor(self.terrain.heightsamples).view(
+                self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
 
         self._create_envs()
 
@@ -218,9 +217,6 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         hf_params.dynamic_friction = self.cfg.terrain.dynamic_friction
         hf_params.restitution = self.cfg.terrain.restitution
         self.gym.add_heightfield(self.sim, self.terrain.heightsamples.flatten(order='C'), hf_params)
-        self.height_samples = torch.tensor(self.terrain.heightsamples).view(
-            self.terrain.tot_rows, self.terrain.tot_cols
-        ).to(self.device)
 
     def _create_trimesh(self):
         tm_params = gymapi.TriangleMeshParams()
@@ -238,14 +234,10 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
             self.terrain.triangles.flatten(order='C'),
             tm_params
         )
-        self.height_samples = torch.tensor(self.terrain.heightsamples).view(
+
+        self.x_edge_mask = torch.tensor(self.terrain.x_edge_mask).view(
             self.terrain.tot_rows, self.terrain.tot_cols
         ).to(self.device)
-
-        if hasattr(self.terrain, 'x_edge_mask'):
-            self.x_edge_mask = torch.tensor(self.terrain.x_edge_mask).view(
-                self.terrain.tot_rows, self.terrain.tot_cols
-            ).to(self.device)
 
     # ---- Observations (matches extreme-parkour: all info in single obs_buf) ----
 
@@ -365,6 +357,12 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
 
     # ---- Goal tracking (ref extreme-parkour _update_goals) ----
 
+    @staticmethod
+    def _pos_to_yaw(pos_rel):
+        norm = torch.norm(pos_rel, dim=-1, keepdim=True)
+        vec = pos_rel / (norm + 1e-5)
+        return torch.atan2(vec[:, 1], vec[:, 0])
+
     def _update_goals(self):
         next_flag = self.reach_goal_timer > self.cfg.env.reach_goal_delay / self.dt
         self.cur_goal_idx[next_flag] += 1
@@ -378,13 +376,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         self.target_pos_rel = self.cur_goals[:, :2] - self.root_states[:, :2]
         self.next_target_pos_rel = self.next_goals[:, :2] - self.root_states[:, :2]
 
-        norm = torch.norm(self.target_pos_rel, dim=-1, keepdim=True)
-        target_vec_norm = self.target_pos_rel / (norm + 1e-5)
-        self.target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])
-
-        norm = torch.norm(self.next_target_pos_rel, dim=-1, keepdim=True)
-        target_vec_norm = self.next_target_pos_rel / (norm + 1e-5)
-        self.next_target_yaw = torch.atan2(target_vec_norm[:, 1], target_vec_norm[:, 0])
+        self.target_yaw = self._pos_to_yaw(self.target_pos_rel)
+        self.next_target_yaw = self._pos_to_yaw(self.next_target_pos_rel)
 
     def _init_buffers(self):
         super()._init_buffers()
@@ -433,31 +426,10 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
             self._body_masses[env_id, b] = props[b].mass
         return props
 
-    def _update_rigid_body_state(self):
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
-        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(self.num_envs, -1, 13)
-        self.feet_state = self.rigid_body_states[:, self.feet_indices, :]
-        self.feet_pos = self.feet_state[:, :, :3]
-        self.feet_vel = self.feet_state[:, :, 7:10]
-        # COM = weighted average of body positions by mass
-        if hasattr(self, '_body_masses'):
-            weighted_pos = self.rigid_body_states[:, :, :3] * self._body_masses[:, :, None]
-            self._body_com[:] = weighted_pos.sum(dim=1) / self._body_total_mass[:, None]
-
     def _post_physics_step_callback(self):
-        self._update_rigid_body_state()
-
-        contact = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 2.
-        self.contact_filt = torch.logical_or(contact, self.last_contacts)
-        self.last_contacts = contact
-
-        self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
-
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt) == 0)
         self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
 
-        # heading_command: compute ang_vel from heading error (ref extreme-parkour L555-559)
         if self.cfg.commands.heading_command:
             forward = quat_apply(self.base_quat, self.forward_vec)
             heading = torch.atan2(forward[:, 1], forward[:, 0])
@@ -465,18 +437,57 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
                 0.8 * wrap_to_pi(self.commands[:, 3] - heading), -1., 1.)
             self.commands[:, 2] *= torch.abs(self.commands[:, 2]) > self.cfg.commands.ang_vel_clip
 
-        self._update_goals()
-
         if self.cfg.terrain.measure_heights:
             self.measured_heights = self._get_heights()
 
+        if self.cfg.domain_rand.push_robots and (self.common_step_counter % self.cfg.domain_rand.push_interval == 0):
+            self._push_robots()
+
     def post_physics_step(self):
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+
+        self.episode_length_buf += 1
+        self.common_step_counter += 1
         self.global_counter += 1
-        super().post_physics_step()
-        # Refresh goals after reset (ref extreme-parkour L261-262)
+
+        self.base_quat[:] = self.root_states[:, 3:7]
+        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+        self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+
+        if hasattr(self, '_body_masses'):
+            weighted_pos = self.rigid_body_states[:, :, :3] * self._body_masses[:, :, None]
+            self._body_com[:] = weighted_pos.sum(dim=1) / self._body_total_mass[:, None]
+
+        self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
+
+        contact = torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) > 2.
+        self.contact_filt = torch.logical_or(contact, self.last_contacts)
+        self.last_contacts = contact
+
+        self._update_goals()
+        self._post_physics_step_callback()
+
+        self.check_termination()
+        self.compute_reward()
+        env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+        self.reset_idx(env_ids)
+
         self.cur_goals = self._gather_cur_goals()
         self.next_goals = self._gather_cur_goals(future=1)
+
+        self.compute_observations()
+
+        self.last_actions[:] = self.actions[:]
+        self.last_dof_vel[:] = self.dof_vel[:]
         self.last_torques[:] = self.torques[:]
+
+    def _push_robots(self):
+        max_vel = self.cfg.domain_rand.max_push_vel_xy
+        self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
 
     # ---- Reset and curriculum ----
 
@@ -507,28 +518,37 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
     def reset_idx(self, env_ids):
         if len(env_ids) == 0:
             return
+        if self.cfg.terrain.curriculum:
+            self._update_terrain_curriculum(env_ids)
+
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
         self._resample_commands(env_ids)
-        if self.cfg.terrain.mesh_type in ["heightfield", "trimesh"]:
-            self._update_terrain_curriculum(env_ids)
-        self.actions[env_ids] = 0.
+        self.gym.simulate(self.sim)
+        self.gym.fetch_results(self.sim, True)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
+        self.last_torques[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
-        self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
+        self.obs_history_buf[env_ids, :, :] = 0.
         self.cur_goal_idx[env_ids] = 0
         self.reach_goal_timer[env_ids] = 0
-        self.obs_history_buf[env_ids] = 0.
         self.delta_yaw[env_ids] = 0.
         self.delta_next_yaw[env_ids] = 0.
+
         self.extras["episode"] = {}
         for key in self.episode_sums.keys():
             self.extras["episode"]["rew_" + key] = torch.mean(
                 self.episode_sums[key][env_ids]
             ) / self.max_episode_length_s
             self.episode_sums[key][env_ids] = 0.
+        self.episode_length_buf[env_ids] = 0
+
+        if self.cfg.terrain.curriculum:
+            self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 
@@ -536,8 +556,9 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         if not self.init_done:
             return
         distance = torch.norm(self.root_states[env_ids, :2] - self.env_origins[env_ids, :2], dim=1)
-        move_up = distance > self.terrain.env_length / 2
-        move_down = (distance < 0.5) * ~move_up
+        threshold = self.commands[env_ids, 0] * self.cfg.env.episode_length_s
+        move_up = distance > 0.8 * threshold
+        move_down = distance < 0.4 * threshold
         self.terrain_levels[env_ids] += 1 * move_up - 1 * move_down
         self.terrain_levels[env_ids] = torch.where(
             self.terrain_levels[env_ids] >= self.max_terrain_level,
@@ -551,26 +572,16 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
     # ---- Termination ----
 
     def check_termination(self):
-        self.reset_buf = torch.any(
-            torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1.,
-            dim=1
-        )
-        self.reset_buf |= torch.logical_or(
-            torch.abs(self.pitch) > 1.0,
-            torch.abs(self.roll) > 0.8
-        )
-        self.reset_buf |= self.root_states[:, 2] < 0.1
+        self.reset_buf = torch.zeros((self.num_envs, ), dtype=torch.bool, device=self.device)
+        self.reset_buf |= torch.abs(self.roll) > 1.5
+        self.reset_buf |= torch.abs(self.pitch) > 1.5
+        self.reset_buf |= self.root_states[:, 2] < -0.25
 
-        # Also terminate if all goals reached
         reach_goal_cutoff = self.cur_goal_idx >= self.cfg.terrain.num_goals
         self.time_out_buf = self.episode_length_buf > self.max_episode_length
         self.time_out_buf |= reach_goal_cutoff
 
         self.reset_buf |= self.time_out_buf
-
-    def _resample_commands(self, env_ids):
-        """Use base class: samples commands[:,0] (vel cap) from command_ranges."""
-        super()._resample_commands(env_ids)
 
     # ---- Height Measurements ----
 
@@ -606,9 +617,3 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
         heights = torch.min(heights1, heights2)
         heights = torch.min(heights, heights3)
         return heights.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale
-
-    def _parse_cfg(self, cfg):
-        super()._parse_cfg(cfg)
-        self._waypoint_resample_interval = int(
-            cfg.parkour.waypoint_update_freq / (self.dt + 1e-6)
-        )

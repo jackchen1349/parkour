@@ -74,12 +74,17 @@ class ParkourCfg(LeggedRobotCfg):
         origin_zero_z = True
         max_init_terrain_level = 5
         num_goals = 8
+        hf2mesh_method = 'grid'
         edge_width_thresh = 0.05
         simplify_grid = False
 
+        no_flat = True
+        all_vertical = False
+        flat_wall = False
+
         terrain_proportions = [
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.20, 0.20, 0.30, 0.30, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.20, 0.20, 0.30, 0.30,
         ]
 
     class morphology:
@@ -143,18 +148,18 @@ class ParkourCfg(LeggedRobotCfg):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/parkour_quadruped/urdf/parkour_quadruped.urdf'
         name = "parkour_quadruped"
         foot_name = "FOOT"
-        penalize_contacts_on = ["THIGH", "SHANK", "HIP"]
-        terminate_after_contacts_on = ["TORSO"]
+        penalize_contacts_on = ["THIGH", "TORSO", "HIP"]
+        terminate_after_contacts_on = []
         self_collisions = 0
 
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
-        friction_range = [0.5, 1.25]
+        friction_range = [0.6, 2.0]
         randomize_base_mass = True
-        added_mass_range = [-0.5, 0.5]
+        added_mass_range = [0.0, 3.0]
         push_robots = True
-        push_interval_s = 15.0
-        max_push_vel_xy = 1.0
+        push_interval_s = 8
+        max_push_vel_xy = 0.5
         spatial_domain_rand = True
         motor_strength_range = [0.8, 1.2]
         action_buf_len = 8
@@ -162,9 +167,9 @@ class ParkourCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         only_positive_rewards = True
         tracking_sigma = 0.20
-        soft_dof_pos_limit = 0.9
+        soft_dof_pos_limit = 1.0
         soft_dof_vel_limit = 1.0
-        soft_torque_limit = 1.0
+        soft_torque_limit = 0.4
         base_height_target = 0.25
         max_contact_force = 40.0
 
@@ -206,11 +211,11 @@ class ParkourCfg(LeggedRobotCfg):
 
         class noise_scales:
             dof_pos = 0.01
-            dof_vel = 1.5
-            lin_vel = 0.1
-            ang_vel = 0.2
-            gravity = 0.05
-            height_measurements = 0.1
+            dof_vel = 0.05
+            lin_vel = 0.05
+            ang_vel = 0.05
+            gravity = 0.02
+            height_measurements = 0.02
 
     class viewer:
         ref_env = 0

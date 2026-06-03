@@ -37,7 +37,7 @@ class PPO:
         if priv_reg_coef_schedual is None:
             priv_reg_coef_schedual = [0, 0.1, 2000, 3000]
         if estimator_hidden_dims is None:
-            estimator_hidden_dims = [256, 128]
+            estimator_hidden_dims = [128, 64]
         self.device = device
         self.desired_kl = desired_kl
         self.schedule = schedule

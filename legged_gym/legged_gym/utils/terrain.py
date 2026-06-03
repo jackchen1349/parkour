@@ -38,12 +38,12 @@ class Terrain:
         
         self.heightsamples = self.height_field_raw
         if self.type=="trimesh":
-            self.vertices, self.triangles, self.x_edge_mask = convert_heightfield_to_trimesh(   self.height_field_raw,
-                                                                                            self.cfg.horizontal_scale,
-                                                                                            self.cfg.vertical_scale,
-                                                                                            self.cfg.slope_treshold)
-            edge_width_thresh = getattr(self.cfg, 'edge_width_thresh', 0.05)
-            half_edge_width = int(edge_width_thresh / self.cfg.horizontal_scale)
+            self.vertices, self.triangles, self.x_edge_mask = convert_heightfield_to_trimesh(
+                self.height_field_raw,
+                self.cfg.horizontal_scale,
+                self.cfg.vertical_scale,
+                self.cfg.slope_treshold)
+            half_edge_width = int(self.cfg.edge_width_thresh / self.cfg.horizontal_scale)
             structure = np.ones((half_edge_width * 2 + 1, 1))
             self.x_edge_mask = binary_dilation(self.x_edge_mask, structure=structure)
     
@@ -60,7 +60,7 @@ class Terrain:
     def curiculum(self):
         for j in range(self.cfg.num_cols):
             for i in range(self.cfg.num_rows):
-                difficulty = i / self.cfg.num_rows
+                difficulty = i / (self.cfg.num_rows - 1)
                 choice = j / self.cfg.num_cols + 0.001
 
                 terrain = self.make_terrain(choice, difficulty)
