@@ -180,13 +180,13 @@ class ParkourCfg(LeggedRobotCfg):
             ang_vel_xy = -0.05
             orientation = -1.0
             dof_acc = -2.5e-7
-            collision = -10.0
+            collision = 0.0
             action_rate = -0.1
             delta_torques = -1.0e-7
             torques = -0.00001
             hip_pos = -0.5
             dof_error = -0.04
-            feet_stumble = -1.0
+            feet_stumble = 0.0
             feet_edge = -1.0
             dof_pos_limits = 0.0
             termination = 0.0
