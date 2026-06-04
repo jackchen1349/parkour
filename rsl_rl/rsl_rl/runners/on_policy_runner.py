@@ -71,7 +71,7 @@ class OnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        tot_iter = num_learning_iterations
+        tot_iter = num_learning_iterations + self.current_learning_iteration
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             hist_encoding = it % self.dagger_update_freq == 0
@@ -117,7 +117,7 @@ class OnPolicyRunner:
                 self.save(os.path.join(self.log_dir, f'model_{it}.pt'))
             ep_infos.clear()
 
-        # self.current_learning_iteration += num_learning_iterations
+        self.current_learning_iteration = tot_iter
         self.save(os.path.join(self.log_dir, f'model_{tot_iter}.pt'))
 
     def log(self, locs, width=80, pad=35):
