@@ -14,7 +14,6 @@ Usage:
 Config:
     --bo_iterations 50       # number of BO trials
     --finetune_steps 400     # steps per candidate
-    --num_eval_eps 10       # evaluation episodes per candidate
 """
 
 import os
@@ -100,11 +99,12 @@ class BayesianOptimizer:
         self.y.append(score)
 
 
-def evaluate_morphology(env, act_inference, xi, num_eps=10):
+def evaluate_morphology(env, act_inference, xi):
     """Evaluate a morphology on parkour tasks using batch (N env) evaluation.
 
     Paper Eq.4: f = (1/N) * Σ_i Σ_t r(s_t^i, a_t^i).
-    Uses the mean cumulative reward across all environments as the fitness metric.
+    Accumulates rewards across all envs for max_steps timesteps.
+    IsaacGym auto-resets done envs, so each env may run multiple episodes within the window.
     """
     env.cfg.morphology.target_morphology = xi
 
@@ -112,36 +112,23 @@ def evaluate_morphology(env, act_inference, xi, num_eps=10):
     ep_rewards = torch.zeros(env.num_envs, device=env.device)
     ep_max_dist = torch.zeros(env.num_envs, device=env.device)
     ep_max_height = torch.zeros(env.num_envs, device=env.device)
-    step_count = 0
+    survived = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     max_steps = 500
 
-    while step_count < max_steps:
+    for _ in range(max_steps):
         with torch.no_grad():
             actions = act_inference(obs, hist_encoding=False)
         obs, _, rewards, dones, _ = env.step(actions)
-        if isinstance(rewards, torch.Tensor):
-            ep_rewards += rewards
+        ep_rewards += rewards
         ep_max_dist = torch.max(ep_max_dist, env.root_states[:, 0] - env.env_origins[:, 0] + 1.2)
         ep_max_height = torch.max(ep_max_height, env.root_states[:, 2])
-        step_count += 1
+        survived &= ~dones
 
-        # Early terminate environments that are done
-        if dones.any():
-            ep_rewards[dones] = ep_rewards[dones]  # keep final values
-            ep_max_dist[dones] = ep_max_dist[dones]
-            ep_max_height[dones] = ep_max_height[dones]
-
-    avg_reward = ep_rewards.mean().item()
-    avg_dist = ep_max_dist.mean().item()
-    avg_height = ep_max_height.mean().item()
-    # Survival: environments that made it to max_steps
-    survival = (step_count >= max_steps)
-
-    return avg_reward, {
-        'cumulative_reward': avg_reward,
-        'distance': avg_dist,
-        'height': avg_height,
-        'survival': float(survival)
+    return ep_rewards.mean().item(), {
+        'cumulative_reward': ep_rewards.mean().item(),
+        'distance': ep_max_dist.mean().item(),
+        'height': ep_max_height.mean().item(),
+        'survival': survived.float().mean().item(),
     }
 
 
@@ -149,9 +136,8 @@ def finetune_policy(env, ppo_runner, steps=400):
     """Quick finetuning of pretrained policy for a specific morphology.
 
     Paper Sec 2.2: ~400 steps per candidate, 6.67% of standard 6000-step training.
-    num_steps_per_env=24 (matching parkour_config), so iterations = ceil(400/24) = 17.
     """
-    num_steps_per_env = 24
+    num_steps_per_env = ppo_runner.num_steps_per_env
     iterations = max(1, int(np.ceil(steps / num_steps_per_env)))
     ppo_runner.learn(
         num_learning_iterations=iterations,
@@ -175,12 +161,10 @@ def main(args):
     # Parse args
     bo_iters = getattr(args, 'bo_iterations', 50)
     ft_steps = getattr(args, 'finetune_steps', 400)
-    num_eval_eps = getattr(args, 'num_eval_eps', 10)
     pretrained_path = getattr(args, 'pretrained_path', None)
 
     print(f"BO iterations: {bo_iters}")
     print(f"Finetune steps per candidate: {ft_steps}")
-    print(f"Eval episodes: {num_eval_eps}")
 
     # Load pretrained model path
     if pretrained_path is None:
@@ -238,7 +222,7 @@ def main(args):
         # Evaluate
         print("Evaluating...")
         act_inference = ppo_runner.get_inference_policy(device=env.device)
-        score, metrics = evaluate_morphology(env, act_inference, xi, num_eps=num_eval_eps)
+        score, metrics = evaluate_morphology(env, act_inference, xi)
         print(f"  Score: {score:.3f} | Dist: {metrics['distance']:.2f}m | "
               f"Height: {metrics['height']:.2f}m | Survival: {metrics['survival']:.2f}")
 
