@@ -47,15 +47,18 @@ class PPO:
         self.storage = None
 
         # Separate optimizers for each encoder module
-        actor_critic_params = set(self.actor_critic.actor.parameters())
-        critic_params = set(self.actor_critic.critic.parameters())
-        scan_encoder_params = set(self.actor_critic.scan_encoder.parameters())
-        priv_encoder_params = set(self.actor_critic.priv_encoder.parameters())
-        hist_encoder_params = set(self.actor_critic.history_encoder.parameters())
+        # NOTE: Use list() directly (not set union) — set ordering is non-deterministic
+        # across Python processes, which breaks checkpoint resume (Adam state is keyed by
+        # positional index, so a different param order maps exp_avg to the wrong tensor).
+        actor_params = list(self.actor_critic.actor.parameters())
+        critic_params = list(self.actor_critic.critic.parameters())
+        scan_encoder_params = list(self.actor_critic.scan_encoder.parameters())
+        priv_encoder_params = list(self.actor_critic.priv_encoder.parameters())
+        hist_encoder_params = list(self.actor_critic.history_encoder.parameters())
         # std is a single parameter
         base_params = [self.actor_critic.std]
         # Actor + Critic + scan_encoder + priv_encoder optimizer
-        ppo_params = (list(actor_critic_params | critic_params | scan_encoder_params | priv_encoder_params)
+        ppo_params = (actor_params + critic_params + scan_encoder_params + priv_encoder_params
                       + base_params)
         self.optimizer = optim.Adam(ppo_params, lr=learning_rate)
         # History encoder optimizer (for DAgger)

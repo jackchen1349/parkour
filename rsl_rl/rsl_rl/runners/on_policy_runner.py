@@ -206,13 +206,44 @@ class OnPolicyRunner:
         if 'estimator_state_dict' in loaded_dict:
             self.alg.estimator.load_state_dict(loaded_dict['estimator_state_dict'])
         if load_optimizer:
-            self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+            self._load_optimizer_state(loaded_dict, self.alg.optimizer, 'optimizer_state_dict')
             if 'hist_encoder_optimizer_state_dict' in loaded_dict:
-                self.alg.hist_encoder_optimizer.load_state_dict(loaded_dict['hist_encoder_optimizer_state_dict'])
+                self._load_optimizer_state(loaded_dict, self.alg.hist_encoder_optimizer,
+                                          'hist_encoder_optimizer_state_dict')
             if 'estimator_optimizer_state_dict' in loaded_dict:
-                self.alg.estimator_optimizer.load_state_dict(loaded_dict['estimator_optimizer_state_dict'])
+                self._load_optimizer_state(loaded_dict, self.alg.estimator_optimizer,
+                                          'estimator_optimizer_state_dict')
         self.current_learning_iteration = loaded_dict['iter']
         return loaded_dict['infos']
+
+    @staticmethod
+    def _load_optimizer_state(loaded_dict, optimizer, key):
+        """Load optimizer state with shape validation for cross-process resume safety.
+
+        PyTorch Adam maps state (exp_avg, exp_avg_sq) to parameters by positional index
+        within each param_group. If the parameter ordering differs between save and load
+        (e.g. due to non-deterministic set iteration), shapes mismatch. Fall back to
+        fresh optimizer state with a warning instead of crashing.
+        """
+        saved_state = loaded_dict[key]
+        # Validate shapes match before loading
+        for pg_idx, saved_pg in enumerate(saved_state['param_groups']):
+            cur_pg = optimizer.param_groups[pg_idx]
+            if len(saved_pg['params']) != len(cur_pg['params']):
+                print(f"WARNING: optimizer param count mismatch for '{key}' — "
+                      f"skipping optimizer state (model weights still loaded)")
+                return
+            for param_idx in range(len(cur_pg['params'])):
+                if param_idx in saved_state['state']:
+                    saved_exp_avg = saved_state['state'][param_idx]['exp_avg']
+                    cur_shape = tuple(cur_pg['params'][param_idx].shape)
+                    if saved_exp_avg.shape != cur_shape:
+                        print(f"WARNING: optimizer shape mismatch for '{key}' — "
+                              f"saved {saved_exp_avg.shape} vs current {cur_shape}. "
+                              f"Skipping optimizer state (model weights still loaded)")
+                        return
+        # All shapes match — safe to load
+        optimizer.load_state_dict(saved_state)
 
     def get_inference_policy(self, device=None):
         self.alg.actor_critic.eval()
