@@ -382,8 +382,8 @@ class ParkourRobot(LeggedRobot, ParkourRewards):
     def _init_buffers(self):
         super()._init_buffers()
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
-        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state)
-        self.feet_state = self.rigid_body_states.view(self.num_envs, -1, 13)[:, self.feet_indices, :]
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_state).view(self.num_envs, -1, 13)
+        self.feet_state = self.rigid_body_states[:, self.feet_indices, :]
         self.feet_pos = self.feet_state[:, :, :3]
         self.feet_vel = self.feet_state[:, :, 7:10]
         self.last_torques = torch.zeros_like(self.torques)

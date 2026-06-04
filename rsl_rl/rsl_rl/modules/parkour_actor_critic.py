@@ -56,7 +56,7 @@ class StateHistoryEncoder(nn.Module):
             self.conv_layers = nn.Sequential(
                 nn.Conv1d(30, 20, kernel_size=6, stride=2), self.activation_fn,
                 nn.Conv1d(20, 10, kernel_size=4, stride=2), self.activation_fn, nn.Flatten())
-            linear_in = 20
+            linear_in = 30  # Conv flattens to (10 * 3) = 30, not 20
         elif tsteps == 10:
             self.conv_layers = nn.Sequential(
                 nn.Conv1d(30, 20, kernel_size=4, stride=2), self.activation_fn,

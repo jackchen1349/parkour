@@ -101,67 +101,60 @@ class BayesianOptimizer:
 
 
 def evaluate_morphology(env, act_inference, xi, num_eps=10):
-    """Evaluate a morphology's performance on parkour tasks.
+    """Evaluate a morphology on parkour tasks using batch (N env) evaluation.
 
-    Paper uses cumulative reward as the fitness metric for BO.
+    Paper Eq.4: f = (1/N) * Σ_i Σ_t r(s_t^i, a_t^i).
+    Uses the mean cumulative reward across all environments as the fitness metric.
     """
     env.cfg.morphology.target_morphology = xi
 
-    all_rewards = []
-    all_dist = []
-    all_height = []
-    survived = 0
-    total_eps = 0
-
     obs, _ = env.reset()
-    for ep in range(num_eps):
-        ep_reward = 0.0
-        ep_max_dist = 0.0
-        ep_max_height = 0.0
-        done = False
-        step_count = 0
+    ep_rewards = torch.zeros(env.num_envs, device=env.device)
+    ep_max_dist = torch.zeros(env.num_envs, device=env.device)
+    ep_max_height = torch.zeros(env.num_envs, device=env.device)
+    step_count = 0
+    max_steps = 500
 
-        while not done and step_count < 500:
-            with torch.no_grad():
-                actions = act_inference(obs)
-            obs, _, rewards, dones, _ = env.step(actions)
-            if isinstance(rewards, torch.Tensor):
-                ep_reward += rewards[0].item() if rewards.numel() > 0 else 0.0
-            else:
-                ep_reward += rewards
-            done = dones[0].item() if isinstance(dones, torch.Tensor) and dones.numel() > 0 else dones
-            root_pos = env.root_states[0, :3].cpu().numpy()
-            init_pos = env.env_origins[0].cpu().numpy()
-            ep_max_dist = max(ep_max_dist, root_pos[0] - init_pos[0] + 1.2)
-            ep_max_height = max(ep_max_height, root_pos[2])
-            step_count += 1
+    while step_count < max_steps:
+        with torch.no_grad():
+            actions = act_inference(obs, hist_encoding=False)
+        obs, _, rewards, dones, _ = env.step(actions)
+        if isinstance(rewards, torch.Tensor):
+            ep_rewards += rewards
+        ep_max_dist = torch.max(ep_max_dist, env.root_states[:, 0] - env.env_origins[:, 0] + 1.2)
+        ep_max_height = torch.max(ep_max_height, env.root_states[:, 2])
+        step_count += 1
 
-        all_rewards.append(ep_reward)
-        all_dist.append(ep_max_dist)
-        all_height.append(ep_max_height)
-        survived += 1 if not done else 0
-        total_eps += 1
+        # Early terminate environments that are done
+        if dones.any():
+            ep_rewards[dones] = ep_rewards[dones]  # keep final values
+            ep_max_dist[dones] = ep_max_dist[dones]
+            ep_max_height[dones] = ep_max_height[dones]
 
-        if not done:
-            obs, _ = env.reset()
-
-    avg_reward = np.mean(all_rewards) if all_rewards else 0.0
-    avg_dist = np.mean(all_dist) if all_dist else 0.0
-    avg_height = np.mean(all_height) if all_height else 0.0
-    survival = survived / max(total_eps, 1)
+    avg_reward = ep_rewards.mean().item()
+    avg_dist = ep_max_dist.mean().item()
+    avg_height = ep_max_height.mean().item()
+    # Survival: environments that made it to max_steps
+    survival = (step_count >= max_steps)
 
     return avg_reward, {
         'cumulative_reward': avg_reward,
         'distance': avg_dist,
         'height': avg_height,
-        'survival': survival
+        'survival': float(survival)
     }
 
 
 def finetune_policy(env, ppo_runner, steps=400):
-    """Quick finetuning of pretrained policy for a specific morphology."""
+    """Quick finetuning of pretrained policy for a specific morphology.
+
+    Paper Sec 2.2: ~400 steps per candidate, 6.67% of standard 6000-step training.
+    num_steps_per_env=24 (matching parkour_config), so iterations = ceil(400/24) = 17.
+    """
+    num_steps_per_env = 24
+    iterations = max(1, int(np.ceil(steps / num_steps_per_env)))
     ppo_runner.learn(
-        num_learning_iterations=max(1, steps // 24),
+        num_learning_iterations=iterations,
         init_at_random_ep_len=True
     )
 
@@ -226,10 +219,6 @@ def main(args):
         # Reduce envs for finetuning speed
         env_cfg.env.num_envs = 2048
 
-        sim_params = {"sim": vars(env_cfg.sim) if hasattr(env_cfg.sim, '__dict__') else {}}
-        from legged_gym.utils.helpers import parse_sim_params
-        sim_params = parse_sim_params(args, sim_params)
-
         env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
         ppo_runner, train_cfg = task_registry.make_alg_runner(
             log_root=None, env=env, name=args.task, args=args, train_cfg=train_cfg
@@ -273,6 +262,10 @@ def main(args):
             json.dump(results, f, indent=2)
 
         env.gym.destroy_sim(env.sim)
+        del env
+        del ppo_runner
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Final summary
     print("\n" + "=" * 60)

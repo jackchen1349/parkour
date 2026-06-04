@@ -30,9 +30,9 @@ class ParkourCfg(LeggedRobotCfg):
         n_scan = 132
         n_priv = 3
         n_priv_latent = 33
-        history_len = 5
+        history_len = 10
         history_encoding = True
-        num_observations = 450  # n_proprio(47)+n_scan(132)+n_priv(3)+n_priv_latent(33)+history_len*n_proprio(235)
+        num_observations = 685  # n_proprio(47)+n_scan(132)+n_priv(3)+n_priv_latent(33)+history_len*n_proprio(470)
         num_privileged_obs = None  # all info in obs_buf, matching extreme-parkour
         num_actions = 12
         episode_length_s = 20
@@ -149,7 +149,7 @@ class ParkourCfg(LeggedRobotCfg):
         name = "parkour_quadruped"
         foot_name = "FOOT"
         penalize_contacts_on = ["THIGH", "TORSO", "HIP"]
-        terminate_after_contacts_on = []
+        terminate_after_contacts_on = ["TORSO"]
         self_collisions = 0
 
     class domain_rand(LeggedRobotCfg.domain_rand):
